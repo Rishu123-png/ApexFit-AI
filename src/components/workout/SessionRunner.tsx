@@ -208,7 +208,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         ['weekly_milestone', undefined],
       ];
       if (!sealed) {
-        setArenaNote('Session saved as self-reported (not server-verified), so no XP was awarded.');
+        setArenaNote('Session saved as self-reported (no server plausibility check) — records stay private; no XP was awarded.');
         return;
       }
       let gained = 0;
