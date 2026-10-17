@@ -10,6 +10,7 @@ export const metadata: Metadata = {
   description:
     'A futuristic, India-first AI fitness and nutrition platform: smart workouts, Indian food tracking, hydration, and an AI coach.',
   applicationName: 'ApexFit AI',
+  manifest: '/manifest.webmanifest',
 };
 
 export const viewport: Viewport = {
