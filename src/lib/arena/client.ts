@@ -39,6 +39,9 @@ export async function arenaFetch<T>(
   options: { method?: 'GET' | 'POST'; body?: unknown } = {},
 ): Promise<T> {
   const res = await fetch(path, {
+    // Fail visibly instead of hanging on skeletons when the server is cold or
+    // the network is weak (Android + Vercel cold start can take tens of seconds).
+    signal: AbortSignal.timeout(20000),
     method: options.method ?? 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
