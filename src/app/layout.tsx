@@ -11,6 +11,29 @@ export const metadata: Metadata = {
     'A futuristic, India-first AI fitness and nutrition platform: smart workouts, Indian food tracking, hydration, and an AI coach.',
   applicationName: 'ApexFit AI',
   manifest: '/manifest.webmanifest',
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icon-192.png', sizes: '192x192', type: 'image/png' },
+    ],
+    apple: [{ url: '/icon-192.png', sizes: '180x180', type: 'image/png' }],
+  },
+  openGraph: {
+    title: 'ApexFit AI — Your Peak. Your Intelligence. Your Evolution.',
+    description:
+      'India-first fitness & nutrition: adaptive workouts, honest nutrition logging, privacy-first Arena leaderboards, and an AI coach you control.',
+    siteName: 'ApexFit AI',
+    type: 'website',
+    // Intentionally no url/absolute images: no production domain is hard-coded.
+    images: [{ url: '/icon-512.png', width: 512, height: 512, alt: 'ApexFit AI' }],
+  },
+  twitter: {
+    card: 'summary',
+    title: 'ApexFit AI — Your Peak. Your Intelligence. Your Evolution.',
+    description: 'Adaptive workouts, honest nutrition logging and a privacy-first Arena — with an AI coach you control.',
+    images: ['/icon-512.png'],
+  },
+  robots: { index: true, follow: true },
 };
 
 export const viewport: Viewport = {
