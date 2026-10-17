@@ -3,8 +3,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import { saveWorkoutSession } from '@/lib/db';
-import { claimArena } from '@/lib/arena/client';
+import { claimArena, arenaFetch } from '@/lib/arena/client';
 import type { ArenaEventType } from '@/lib/arena/types';
+import { VoiceControl } from '@/components/voice/VoiceControl';
 import { formatDuration } from '@/lib/dates';
 import type { WorkoutPlan } from '@/lib/types';
 import { Button, GlassCard, Badge, Alert } from '@/components/ui';
@@ -12,6 +13,31 @@ import { IconPlay, IconPause, IconStop, IconCheck, IconChevronRight, IconInfo } 
 import { clsx } from '@/lib/clsx';
 
 type Phase = 'running' | 'paused' | 'finished';
+
+// ── Recoverable in-progress session (localStorage, per user+plan, 12h window) ─
+const SESSION_STORE_VER = 1;
+interface StoredRun {
+  v: number;
+  seconds: number;
+  currentIdx: number;
+  completedSets: Record<string, number>;
+  restLeftSec: number | null;
+  paused: boolean;
+  savedAt: number;
+}
+const runKey = (uid: string, planId: string) => `apexfit:run:v${SESSION_STORE_VER}:${uid}:${planId}`;
+function loadStoredRun(uid: string, planId: string): StoredRun | null {
+  try {
+    const raw = localStorage.getItem(runKey(uid, planId));
+    if (!raw) return null;
+    const s = JSON.parse(raw) as StoredRun;
+    if (s.v !== SESSION_STORE_VER || typeof s.completedSets !== 'object' || s.completedSets === null) return null;
+    if (Date.now() - s.savedAt > 12 * 60 * 60 * 1000) return null;
+    return s;
+  } catch {
+    return null;
+  }
+}
 
 export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () => void }) {
   const { user, getIdToken } = useAuth();
@@ -21,7 +47,10 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const [completedSets, setCompletedSets] = useState<Record<string, number>>({});
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [arenaNote, setArenaNote] = useState('');
+  const [restLeftSec, setRestLeftSec] = useState<number | null>(null);
+  const [restoredAgoMin, setRestoredAgoMin] = useState<number | null>(null);
   const startedAtRef = useRef(Date.now());
+  const restoredRef = useRef(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const current = plan.exercises[currentIdx];
@@ -37,6 +66,69 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
     };
   }, [phase]);
 
+  // ── Rest timer ──
+  useEffect(() => {
+    if (restLeftSec === null || phase !== 'running') return;
+    if (restLeftSec <= 0) {
+      setRestLeftSec(null);
+      try { navigator.vibrate?.(150); } catch { /* unsupported */ }
+      return;
+    }
+    const t = setTimeout(() => setRestLeftSec((s) => (s === null ? null : Math.max(0, s - 1))), 1000);
+    return () => clearTimeout(t);
+  }, [restLeftSec, phase]);
+
+  // ── Recover interrupted session ──
+  useEffect(() => {
+    if (!user?.uid || restoredRef.current) return;
+    restoredRef.current = true;
+    const s = loadStoredRun(user.uid, plan.id);
+    if (s && Object.values(s.completedSets).some((n) => n > 0)) {
+      setSeconds(s.seconds);
+      setCurrentIdx(Math.min(s.currentIdx, plan.exercises.length - 1));
+      setCompletedSets(s.completedSets);
+      setRestLeftSec(s.restLeftSec ?? null);
+      if (s.paused) setPhase('paused');
+      setRestoredAgoMin(Math.max(1, Math.round((Date.now() - s.savedAt) / 60000)));
+    }
+  }, [user?.uid, plan.id, plan.exercises.length]);
+
+  // ── Autosave progress (crash/close-safe) ──
+  useEffect(() => {
+    if (!user?.uid || phase === 'finished') return;
+    try {
+      localStorage.setItem(
+        runKey(user.uid, plan.id),
+        JSON.stringify({
+          v: SESSION_STORE_VER,
+          seconds,
+          currentIdx,
+          completedSets,
+          restLeftSec,
+          paused: phase === 'paused',
+          savedAt: Date.now(),
+        } satisfies StoredRun),
+      );
+    } catch { /* storage blocked/full — session continues in memory */ }
+  }, [user?.uid, plan.id, seconds, currentIdx, completedSets, restLeftSec, phase]);
+
+  const clearStoredRun = useCallback(() => {
+    try {
+      if (user?.uid) localStorage.removeItem(runKey(user.uid, plan.id));
+    } catch { /* ignore */ }
+  }, [user?.uid, plan.id]);
+
+  function discardRecovery() {
+    clearStoredRun();
+    setSeconds(0);
+    setCurrentIdx(0);
+    setCompletedSets({});
+    setRestLeftSec(null);
+    setPhase('running');
+    setRestoredAgoMin(null);
+    startedAtRef.current = Date.now() - 0;
+  }
+
   const doneSets = current ? (completedSets[current.id] ?? 0) : 0;
   const totalSets = useMemo(
     () => Object.values(completedSets).reduce((a, b) => a + b, 0),
@@ -44,17 +136,21 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   );
 
   const markSet = useCallback(() => {
-    if (!current) return;
-    setCompletedSets((prev) => {
-      const cur = Math.min(prev[current.id] ?? 0, current.sets);
-      if (cur >= current.sets) return prev;
-      return { ...prev, [current.id]: cur + 1 };
-    });
-  }, [current]);
+    if (!current || phase !== 'running') return;
+    const cur = completedSets[current.id] ?? 0;
+    if (cur >= current.sets) return;
+    setCompletedSets((prev) => ({ ...prev, [current.id]: (prev[current.id] ?? 0) + 1 }));
+    setRestLeftSec(current.restSec > 0 ? current.restSec : 45);
+    try { navigator.vibrate?.(60); } catch { /* unsupported */ }
+  }, [current, completedSets, phase]);
 
   const goNext = useCallback(() => {
+    setRestLeftSec(null);
     setCurrentIdx((i) => Math.min(i + 1, plan.exercises.length - 1));
   }, [plan.exercises.length]);
+
+  const pauseSession = useCallback(() => setPhase('paused'), []);
+  const resumeSession = useCallback(() => setPhase('running'), []);
 
   async function finish() {
     setPhase('finished');
@@ -80,25 +176,41 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         exercises,
       });
       setSaveState('saved');
+      clearStoredRun();
       void claimArenaRewards(sessionId, status);
     } catch {
       setSaveState('error');
     }
   }
 
-  /** Best-effort Arena XP claims — server validates eligibility + idempotency.
-   *  Silent for non-participants and when the server isn't configured. */
+  /** Best-effort Arena XP claims. First ask the server to SEAL the session
+   *  (plausibility check against the server clock) — unsealed/self-reported
+   *  sessions stay in private history but earn no XP. Server re-validates
+   *  eligibility, ownership, caps and idempotency for every claim. */
   async function claimArenaRewards(sessionId: string, status: 'completed' | 'partial') {
     try {
       const token = await getIdToken();
-      const claims: [ArenaEventType, string | undefined][] =
-        status === 'completed'
-          ? [
-              [plan.id === 'core-mobility' ? 'mobility_session' : 'workout_completed', sessionId],
-              ['daily_mission', undefined],
-              ['weekly_milestone', undefined],
-            ]
-          : [['daily_mission', undefined]];
+      let sealed = false;
+      try {
+        const sealRes = await arenaFetch<{ sealed: boolean }>(token, '/api/workouts/seal', {
+          method: 'POST',
+          body: { sessionId },
+        });
+        sealed = sealRes.sealed;
+      } catch {
+        sealed = false; // offline / admin not configured — no rewards, history intact
+      }
+      const claims: [ArenaEventType, string | undefined][] = [
+        ...(status === 'completed' && sealed
+          ? [[plan.id === 'core-mobility' ? 'mobility_session' : 'workout_completed', sessionId] as [ArenaEventType, string]]
+          : []),
+        ['daily_mission', undefined],
+        ['weekly_milestone', undefined],
+      ];
+      if (!sealed) {
+        setArenaNote('Session saved as self-reported (not server-verified), so no XP was awarded.');
+        return;
+      }
       let gained = 0;
       const leveled: number[] = [];
       for (const [type, sourceId] of claims) {
@@ -182,14 +294,46 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         </div>
         <div className="flex items-center gap-2">
           {phase === 'running' ? (
-            <Button variant="outline" onClick={() => setPhase('paused')}><IconPause width={15} /> Pause</Button>
+            <Button variant="outline" onClick={pauseSession}><IconPause width={15} /> Pause</Button>
           ) : (
-            <Button glow onClick={() => setPhase('running')}><IconPlay width={15} /> Resume</Button>
+            <Button glow onClick={resumeSession}><IconPlay width={15} /> Resume</Button>
           )}
           <Button variant="danger" onClick={finish}><IconStop width={15} /> Finish</Button>
         </div>
         {phase === 'paused' && <p role="status" className="w-full text-center text-xs font-semibold text-amber">Paused — take a breath.</p>}
+
+        {/* Rest timer */}
+        {restLeftSec !== null && (
+          <div className="flex w-full items-center gap-3 rounded-xl border border-electric-500/30 bg-electric-500/10 px-3.5 py-2" role="timer" aria-label={`Rest ${restLeftSec} seconds left`}>
+            <span className="font-mono text-lg font-extrabold tabular-nums text-electric-200">{restLeftSec}s</span>
+            <span className="text-xs text-slate-400">rest between sets</span>
+            <div className="ml-auto flex gap-1.5">
+              <button className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-white/5" onClick={() => setRestLeftSec((s) => (s ?? 0) + 15)}>+15s</button>
+              <button className="rounded-lg border border-white/10 px-2.5 py-1 text-xs text-slate-300 transition hover:bg-white/5" onClick={() => setRestLeftSec(null)}>Skip</button>
+            </div>
+          </div>
+        )}
+
+        {/* Voice command centre — typed controls above always work */}
+        <VoiceControl
+          canLogSet={phase === 'running' && !!current && (completedSets[current.id] ?? 0) < current.sets}
+          paused={phase === 'paused'}
+          onPause={pauseSession}
+          onResume={resumeSession}
+          onNextExercise={goNext}
+          onSetDone={markSet}
+          onFinishConfirmed={finish}
+        />
       </GlassCard>
+
+      {/* Recovery notice */}
+      {restoredAgoMin !== null && (
+        <div className="flex items-center gap-2 rounded-xl border border-electric-500/30 bg-electric-500/10 px-3 py-2 text-xs text-electric-200" role="status">
+          <IconInfo width={13} /> Recovered your unfinished session from ~{restoredAgoMin} min ago.
+          <button className="ml-auto font-semibold underline underline-offset-2 hover:text-white" onClick={discardRecovery}>Discard &amp; restart</button>
+          <button aria-label="Dismiss recovery notice" onClick={() => setRestoredAgoMin(null)}>✕</button>
+        </div>
+      )}
 
       {/* Progress dots */}
       <div className="flex gap-1.5" aria-label={`Exercise ${currentIdx + 1} of ${plan.exercises.length}`}>
