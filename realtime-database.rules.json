@@ -14,7 +14,7 @@
 
         "preferences": {
           ".validate": "newData.hasChildren(['calorieTarget', 'proteinTarget', 'waterTargetMl'])",
-          "calorieTarget": { ".validate": "newData.isNumber() && newData.val() >= 800 && newData.val() <= 8000" },
+          "calorieTarget": { ".validate": "newData.isNumber() && newData.val() >= 1400 && newData.val() <= 6000" },
           "proteinTarget": { ".validate": "newData.isNumber() && newData.val() >= 20 && newData.val() <= 400" },
           "waterTargetMl": { ".validate": "newData.isNumber() && newData.val() >= 500 && newData.val() <= 8000" },
           "$other": { ".validate": true }
@@ -32,7 +32,7 @@
               "protein": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300" },
               "carbs": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 600" },
               "fat": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300" },
-              "source": { ".validate": "newData.val() === 'verified' || newData.val() === 'estimate'" },
+              "source": { ".validate": "newData.val() === 'reference' || newData.val() === 'estimate' || newData.val() === 'custom' || newData.val() === 'verified'" },
               "loggedAt": { ".validate": "newData.isNumber()" },
               "$other": { ".validate": true }
             }
@@ -55,6 +55,16 @@
           }
         },
 
+        "checkins": {
+          "$date": {
+            ".validate": "$date.matches(/^\\d{4}-\\d{2}-\\d{2}$/) && (newData.val() === null || newData.isNumber() === false)",
+            "sleepHrs": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 24" },
+            "energy": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5" },
+            "soreness": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5" },
+            "createdAt": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": true }
+          }
+        },
         "workouts": {
           "$workoutId": {
             ".validate": "newData.hasChildren(['planId', 'planName', 'startedAt', 'durationSec', 'totalSets', 'status'])",
