@@ -14,12 +14,14 @@ import {
   IconCrown,
   IconLogout,
   IconTrophy,
+  IconTrendingUp,
 } from '@/components/icons';
 import { Splash } from '@/components/AuthGate';
 
 const NAV = [
   { href: '/dashboard', label: 'Home', icon: IconHome },
   { href: '/workouts', label: 'Train', icon: IconDumbbell },
+  { href: '/insights', label: 'Insights', icon: IconTrendingUp },
   { href: '/arena', label: 'Arena', icon: IconTrophy },
   { href: '/nutrition', label: 'Fuel', icon: IconBowl },
   { href: '/camera', label: 'Vision', icon: IconCamera },

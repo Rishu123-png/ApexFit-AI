@@ -128,3 +128,15 @@ export const IconGoogle = (p: P) => (
     <path fill="#EA4335" d="M12 4.6c1.8 0 3 .8 3.7 1.4l3.3-3.2C17 1 15.2 0 12 0 7.3 0 3.2 2.7 1.2 6.7l3.9 3c1-2.9 3.8-5.1 7-5.1z" />
   </svg>
 );
+export const IconMicOff = (p: P) => (
+  <svg {...base(p)}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 9 6.9M3 3l18 18" /></svg>
+);
+export const IconTrendingUp = (p: P) => (
+  <svg {...base(p)}><path d="M3 17l6-6 4 4 8-8" /><path d="M15 7h6v6" /></svg>
+);
+export const IconShare = (p: P) => (
+  <svg {...base(p)}><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="6" r="2.5" /><circle cx="18" cy="18" r="2.5" /><path d="m8.3 10.8 7.4-3.8M8.3 13.2l7.4 3.8" /></svg>
+);
+export const IconCopy = (p: P) => (
+  <svg {...base(p)}><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></svg>
+);
