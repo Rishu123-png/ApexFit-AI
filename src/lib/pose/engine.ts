@@ -1,13 +1,11 @@
 /**
- * Pose estimation integration point.
+ * Pose estimation engine — on-device via MediaPipe Pose Landmarker.
  *
- * The camera workout UI depends ONLY on the `PoseEngine` interface below.
- * A real engine (e.g. MediaPipe Pose Landmarker via
- * `@mediapipe/tasks-vision`) can be dropped in by implementing the interface
- * without touching page code — that is the intended next iteration.
- *
- * Until a real model is loaded and validated on-device, the UI must surface
- * the honest "engine not installed" state instead of simulating results.
+ * - Model/runtine URLs are CDN defaults, overridable via NEXT_PUBLIC_ env
+ *   vars for self-hosting. Frames NEVER leave the device.
+ * - The package is imported lazily so the camera page loads fine even when
+ *   the engine can't (slow network, CDN blocked) — the UI then shows the
+ *   honest "engine unavailable" state instead of simulating anything.
  */
 
 export interface PoseLandmark {
@@ -40,24 +38,108 @@ export interface PoseEngine {
 
 export class PoseEngineNotInstalledError extends Error {
   readonly code = 'POSE_ENGINE_NOT_INSTALLED';
-  constructor() {
+  constructor(reason?: string) {
     super(
-      'No pose-estimation engine is installed. Implement `PoseEngine` in ' +
-        'src/lib/pose/engine.ts (e.g. wrap @mediapipe/tasks-vision PoseLandmarker) ' +
-        'and return it from createPoseEngine().',
+      'Pose engine unavailable. ' +
+        (reason ?? 'The @mediapipe/tasks-vision package or its CDN runtime could not be loaded.'),
     );
   }
 }
 
-/**
- * Factory consumed by the camera page. Deliberately throws until a real
- * engine is integrated — the UI catches this and shows the honest state.
- *
- * Example future implementation:
- *   const vision = await FilesetResolver.forVisionTasks(WASM_URL);
- *   const landmarker = await PoseLandmarker.createFromOptions(vision, {...});
- *   return new MediaPipePoseEngine(landmarker);
- */
+const WASM_URL =
+  process.env.NEXT_PUBLIC_POSE_WASM_URL ??
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.21/wasm';
+const MODEL_URL =
+  process.env.NEXT_PUBLIC_POSE_MODEL_URL ??
+  'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+
+interface LandmarkResultLike {
+  landmarks?: { x: number; y: number; z: number; visibility?: number }[][];
+}
+
+interface LandmarkerLike {
+  detectForVideo(video: HTMLVideoElement, timestampMs: number): LandmarkResultLike;
+  close(): void;
+}
+
+interface TasksVisionModule {
+  FilesetResolver: { forVisionTasks(basePath: string): Promise<unknown> };
+  PoseLandmarker: {
+    createFromOptions(v: unknown, opts: Record<string, unknown>): Promise<LandmarkerLike>;
+  };
+}
+
+class MediaPipePoseEngine implements PoseEngine {
+  private landmarker: LandmarkerLike | null = null;
+  private frameCb: ((f: PoseFrame) => void) | null = null;
+  private repCb: ((e: RepEvent) => void) | null = null;
+  /** Throttle: peak ~12 fps is plenty for rep counting on phone GPUs. */
+  private lastTs = 0;
+
+  async load(): Promise<void> {
+    let mod: TasksVisionModule;
+    try {
+      mod = (await import('@mediapipe/tasks-vision')) as unknown as TasksVisionModule;
+    } catch {
+      throw new PoseEngineNotInstalledError(
+        'The pose-vision package is not available in this build.',
+      );
+    }
+    let vision: unknown;
+    try {
+      vision = await mod.FilesetResolver.forVisionTasks(WASM_URL);
+    } catch {
+      throw new PoseEngineNotInstalledError(
+        'Couldn’t download the pose runtime (check network/ad-blockers).',
+      );
+    }
+    try {
+      this.landmarker = await mod.PoseLandmarker.createFromOptions(vision, {
+        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
+        runningMode: 'VIDEO',
+        numPoses: 1,
+      });
+    } catch {
+      throw new PoseEngineNotInstalledError(
+        'The pose model could not be loaded on this device (GPU/WebGL missing?).',
+      );
+    }
+  }
+
+  processFrame(video: HTMLVideoElement, timestampMs: number): void {
+    if (!this.landmarker || !this.frameCb) return;
+    if (timestampMs - this.lastTs < 80) return; // graceful throttle
+    this.lastTs = timestampMs;
+    try {
+      const res = this.landmarker.detectForVideo(video, timestampMs);
+      const landmarks = res.landmarks?.[0];
+      if (landmarks) this.frameCb({ landmarks, timestampMs });
+    } catch {
+      // A malformed frame should never crash the page.
+    }
+  }
+
+  onResults(cb: (frame: PoseFrame) => void): void {
+    this.frameCb = cb;
+  }
+
+  onRep(cb: (event: RepEvent) => void): void {
+    this.repCb = cb;
+  }
+
+  dispose(): void {
+    try {
+      this.landmarker?.close();
+    } catch {
+      /* already freed */
+    }
+    this.landmarker = null;
+    this.frameCb = null;
+    this.repCb = null;
+  }
+}
+
+/** Factory — always returns an engine; failures surface during load(). */
 export function createPoseEngine(): PoseEngine {
-  throw new PoseEngineNotInstalledError();
+  return new MediaPipePoseEngine();
 }
