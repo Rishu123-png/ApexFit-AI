@@ -1,36 +1,97 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
-import Link from 'next/link';
-import { createPoseEngine, PoseEngineNotInstalledError } from '@/lib/pose/engine';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPoseEngine, type PoseEngine, type PoseFrame } from '@/lib/pose/engine';
+import { AngleRepCounter, TRACKABLE_EXERCISES, type TrackableExercise, type RepQuality } from '@/lib/pose/repCounter';
+import { kneeAngle, elbowAngle, keyJointsVisibility, JOINTS } from '@/lib/pose/angles';
+import { drawSkeleton } from '@/lib/pose/skeleton';
 import { GlassCard, Alert, Badge, Button } from '@/components/ui';
-import { IconCamera, IconShield, IconAlert, IconCheck, IconInfo, IconScan, IconMic } from '@/components/icons';
+import { IconCamera, IconShield, IconAlert, IconCheck, IconInfo, IconPlay, IconStop, IconRefresh } from '@/components/icons';
 
 type CameraState = 'idle' | 'requesting' | 'active' | 'denied' | 'error' | 'unsupported';
+type EngineState = { kind: 'idle' } | { kind: 'loading' } | { kind: 'ready' } | { kind: 'failed'; reason: string };
+
+const TRACK_JOINTS = [
+  JOINTS.leftHip, JOINTS.rightHip, JOINTS.leftKnee, JOINTS.rightKnee,
+  JOINTS.leftAnkle, JOINTS.rightAnkle, JOINTS.leftShoulder, JOINTS.rightShoulder,
+  JOINTS.leftElbow, JOINTS.rightElbow, JOINTS.leftWrist, JOINTS.rightWrist,
+];
 
 export default function CameraWorkoutPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const [state, setState] = useState<CameraState>('idle');
-  const [engineStatus, setEngineStatus] = useState<'unknown' | 'missing' | 'ready'>('unknown');
+  const engineRef = useRef<PoseEngine | null>(null);
+  const counterRef = useRef<AngleRepCounter>(new AngleRepCounter(TRACKABLE_EXERCISES[0].counter));
+  const rafRef = useRef<number>(0);
+  const lastDrawRef = useRef<PoseFrame | null>(null);
 
-  useEffect(() => {
-    // Probe the integration point (not the network) so the page can honestly
-    // report whether a pose engine exists.
-    try {
-      createPoseEngine();
-      setEngineStatus('ready');
-    } catch (err) {
-      if (err instanceof PoseEngineNotInstalledError) setEngineStatus('missing');
-    }
-    return stopStream; // cleanup on unmount
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const [state, setState] = useState<CameraState>('idle');
+  const [engine, setEngine] = useState<EngineState>({ kind: 'idle' });
+  const [tracking, setTracking] = useState(false);
+  const [exercise, setExercise] = useState<TrackableExercise>(TRACKABLE_EXERCISES[0]);
+  const [reps, setReps] = useState(0);
+  const [quality, setQuality] = useState<RepQuality | null>(null);
+  const [visibility, setVisibility] = useState(0);
+  const [phase, setPhase] = useState<'extended' | 'low'>('extended');
+
+  const stopLoop = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
   }, []);
 
-  function stopStream() {
+  const stopStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
+  }, []);
+
+  useEffect(
+    () => () => {
+      stopLoop();
+      stopStream();
+      engineRef.current?.dispose();
+      engineRef.current = null;
+    },
+    [stopLoop, stopStream],
+  );
+
+  function onFrame(frame: PoseFrame) {
+    lastDrawRef.current = frame;
+    const { angle, visible } =
+      exercise.kind === 'knee' ? kneeAngle(frame.landmarks) : elbowAngle(frame.landmarks);
+    const vis = keyJointsVisibility(frame.landmarks, TRACK_JOINTS);
+    setVisibility(vis);
+    const ev = counterRef.current.feed(angle, vis, frame.timestampMs);
+    setPhase(counterRef.current.currentPhase);
+    if (ev) {
+      setReps(ev.count);
+      setQuality(ev.quality);
+    } else if (!visible) {
+      setQuality(null);
+    }
+  }
+
+  function loop() {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (video && engineRef.current && video.readyState >= 2) {
+      engineRef.current.processFrame(video, performance.now());
+    }
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      const frame = lastDrawRef.current;
+      if (ctx && frame) {
+        if (canvas.width !== video!.videoWidth || canvas.height !== video!.videoHeight) {
+          canvas.width = video!.videoWidth || 640;
+          canvas.height = video!.videoHeight || 360;
+        }
+        drawSkeleton(ctx, frame.landmarks, canvas.width, canvas.height, visibility >= 0.6);
+      } else if (ctx) {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+    rafRef.current = requestAnimationFrame(loop);
   }
 
   async function startCamera() {
@@ -39,8 +100,19 @@ export default function CameraWorkoutPage() {
       return;
     }
     setState('requesting');
+    // Engine model loads in parallel with the permission prompt.
+    const eng = createPoseEngine();
+    engineRef.current = eng;
+    setEngine({ kind: 'loading' });
+    eng.load()
+      .then(() => {
+        if (engineRef.current === eng) setEngine({ kind: 'ready' });
+      })
+      .catch((err: Error) => {
+        if (engineRef.current === eng) setEngine({ kind: 'failed', reason: err.message });
+      });
+
     try {
-      // Camera is requested ONLY after this explicit user action.
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
         audio: false,
@@ -57,7 +129,42 @@ export default function CameraWorkoutPage() {
     }
   }
 
+  function startTracking() {
+    engineRef.current?.onResults(onFrame);
+    stopLoop();
+    lastDrawRef.current = null;
+    counterRef.current = new AngleRepCounter(exercise.counter);
+    setReps(0);
+    setQuality(null);
+    setPhase('extended');
+    setVisibility(0);
+    setTracking(true);
+    rafRef.current = requestAnimationFrame(loop);
+  }
+
+  function stopTracking() {
+    stopLoop();
+    engineRef.current?.onResults(() => undefined);
+    setTracking(false);
+  }
+
+  function resetReps() {
+    counterRef.current.reset();
+    setReps(0);
+    setQuality(null);
+    setPhase('extended');
+  }
+
+  function switchExercise(ex: TrackableExercise) {
+    setExercise(ex);
+    counterRef.current = new AngleRepCounter(ex.counter);
+    setReps(0);
+    setQuality(null);
+    setPhase('extended');
+  }
+
   function stopCamera() {
+    stopTracking();
     stopStream();
     setState('idle');
   }
@@ -66,32 +173,32 @@ export default function CameraWorkoutPage() {
     <div className="mx-auto max-w-2xl space-y-5">
       <div>
         <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">
-          Vision <span className="neon-text">studio</span>
+          Vision <span className="neon-text">coach</span>
         </h1>
         <p className="mt-1 text-sm text-slate-400">
-          Camera-assisted workouts: rep counting and form feedback, processed on your device.
+          On-device pose tracking for rep counting. Video never leaves your phone — nothing is uploaded, recorded or shared.
         </p>
       </div>
 
-      {/* Honest capability status */}
-      {engineStatus === 'missing' ? (
+      <Alert kind="info" className="flex items-start gap-2">
+        <IconInfo width={16} className="mt-0.5 shrink-0" />
+        <span>
+          Counts and cues are guidance, not coaching verdicts or medical advice. Only sessions finished in{' '}
+          <b>Train</b> earn XP — camera tracking never grants rewards.
+        </span>
+      </Alert>
+
+      {/* Engine status */}
+      {engine.kind === 'failed' && (
         <Alert kind="warning" className="flex items-start gap-2">
           <IconAlert width={16} className="mt-0.5 shrink-0" />
           <span>
-            <b>Pose engine not installed yet.</b> The integration point is ready (
-            <code className="code">src/lib/pose/engine.ts</code>) — install MediaPipe Pose
-            Landmarker (or another real engine), wrap it in the <code className="code">PoseEngine</code>{' '}
-            interface, and this screen will switch to live tracking. Until then you can verify camera
-            access below; no pose data is analysed or simulated.
+            <b>Pose engine unavailable:</b> {engine.reason} Camera preview still works below; tracking turns on once the model can load (try reloading on Wi-Fi and without ad-blockers).
           </span>
         </Alert>
-      ) : engineStatus === 'ready' ? (
-        <Alert kind="success" className="flex items-center gap-2">
-          <IconCheck width={16} /> Pose engine loaded — live tracking available.
-        </Alert>
-      ) : null}
+      )}
 
-      {/* Permission explainer — shown before any camera request */}
+      {/* Permission explainer */}
       {state === 'idle' && (
         <GlassCard className="space-y-4">
           <div className="flex items-center gap-3">
@@ -101,9 +208,9 @@ export default function CameraWorkoutPage() {
             <h2 className="text-lg font-bold">Camera check</h2>
           </div>
           <ul className="space-y-2.5 text-sm text-slate-300">
-            <li className="flex gap-2.5"><IconShield width={16} className="mt-0.5 shrink-0 text-mint" /> Video stays on this device — nothing is uploaded or recorded.</li>
-            <li className="flex gap-2.5"><IconInfo width={16} className="mt-0.5 shrink-0 text-electric-300" /> Your browser will ask for permission. The camera starts only if you tap the button below.</li>
-            <li className="flex gap-2.5"><IconCamera width={16} className="mt-0.5 shrink-0 text-violet" /> Stand 2–3 metres back so your whole body is visible, in decent light.</li>
+            <li className="flex gap-2.5"><IconShield width={16} className="mt-0.5 shrink-0 text-mint" /> Frames are processed locally and discarded — no upload, no recording.</li>
+            <li className="flex gap-2.5"><IconInfo width={16} className="mt-0.5 shrink-0 text-electric-300" /> The pose model (~5 MB) downloads once from a CDN on first use, then your browser caches it.</li>
+            <li className="flex gap-2.5"><IconCamera width={16} className="mt-0.5 shrink-0 text-violet" /> Stand 2–3 m back, whole body in frame, decent light, phone steady.</li>
           </ul>
           <Button glow onClick={startCamera} className="w-full py-3">
             <IconCamera width={16} /> Enable camera — start preview
@@ -115,69 +222,104 @@ export default function CameraWorkoutPage() {
         <GlassCard className="flex flex-col items-center gap-3 py-10 text-center">
           <div className="h-10 w-10 animate-spin rounded-full border-2 border-electric-500 border-t-transparent" role="status" aria-label="Requesting camera permission" />
           <p className="text-sm text-slate-300">Waiting for camera permission…</p>
-          <p className="text-xs text-slate-500">Check your browser’s permission prompt.</p>
+          <p className="text-xs text-slate-500">Check your browser’s permission prompt. Loading the pose model in parallel…</p>
         </GlassCard>
       )}
 
       {state === 'active' && (
         <GlassCard className="space-y-3">
           <div className="relative overflow-hidden rounded-2xl border border-electric-500/20 bg-black">
-            <video
-              ref={videoRef}
-              playsInline
-              muted
-              autoPlay
-              className="mx-auto aspect-video w-full object-cover"
-              aria-label="Live camera preview"
-            />
-            {/* Neutral framing guide — not a simulation of pose landmarks */}
-            <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-              <div className="h-4/5 w-3/5 rounded-[50%] border-2 border-dashed border-neon/40" aria-hidden="true" />
+            <video ref={videoRef} playsInline muted autoPlay className="mx-auto aspect-video w-full object-cover" aria-label="Live camera preview" />
+            <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" aria-hidden="true" />
+
+            <div className="absolute left-3 top-3 flex gap-2">
+              <Badge tone="green">Live preview</Badge>
+              {engine.kind === 'loading' && <Badge tone="blue">Loading model…</Badge>}
+              {engine.kind === 'ready' && tracking && <Badge tone="amber">Tracking</Badge>}
             </div>
-            <div className="absolute left-3 top-3"><Badge tone="green">Live preview</Badge></div>
+
+            {tracking && (
+              <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
+                <div className="rounded-2xl border border-neon/40 bg-ink/80 px-4 py-2 text-center backdrop-blur">
+                  <p className="font-mono text-3xl font-extrabold tabular-nums text-neon" aria-live="polite">{reps}</p>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-400">reps</p>
+                </div>
+                {quality && (
+                  <Badge tone={quality === 'good' ? 'green' : 'amber'}>
+                    {quality === 'good' ? 'good rep' : quality === 'shallow' ? 'go a bit deeper' : 'slow down'}
+                  </Badge>
+                )}
+                {visibility < 0.6 && (
+                  <Badge tone="amber">step back — joints not fully visible</Badge>
+                )}
+              </div>
+            )}
           </div>
-          <p className="text-xs text-slate-500">
-            The overlay is a framing guide only — pose landmarks will render here once a real engine
-            is integrated.
+
+          {/* Exercise picker */}
+          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Exercise to track">
+            {TRACKABLE_EXERCISES.map((ex) => (
+              <button
+                key={ex.id}
+                role="tab"
+                aria-selected={exercise.id === ex.id}
+                onClick={() => switchExercise(ex)}
+                className={`rounded-xl border px-3.5 py-2 text-sm font-semibold transition ${
+                  exercise.id === ex.id
+                    ? 'border-electric-400 bg-electric-500/20 text-electric-200'
+                    : 'border-white/10 bg-white/[0.03] text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {ex.label}
+              </button>
+            ))}
+          </div>
+
+          <p className="flex items-start gap-1.5 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-slate-400">
+            <IconInfo width={13} className="mt-0.5 shrink-0" /> {exercise.cue}
           </p>
-          <Button variant="danger" onClick={stopCamera} className="w-full">Stop camera</Button>
+
+          <div className="flex gap-2">
+            {engine.kind === 'ready' ? (
+              !tracking ? (
+                <Button glow onClick={startTracking} className="flex-1 py-3"><IconPlay width={15} /> Start rep counting</Button>
+              ) : (
+                <>
+                  <Button variant="danger" onClick={stopTracking} className="flex-1 py-3"><IconStop width={15} /> Stop tracking</Button>
+                  <Button variant="outline" onClick={resetReps}><IconRefresh width={15} /> Reset reps</Button>
+                </>
+              )
+            ) : engine.kind === 'loading' ? (
+              <Button disabled className="flex-1 py-3">Model loading…</Button>
+            ) : (
+              <Button variant="outline" onClick={() => { setEngine({ kind: 'loading' }); engineRef.current = createPoseEngine(); engineRef.current.load().then(() => setEngine({ kind: 'ready' })).catch((e: Error) => setEngine({ kind: 'failed', reason: e.message })); }} className="flex-1 py-3">
+                <IconRefresh width={15} /> Retry model load
+              </Button>
+            )}
+            <Button variant="ghost" onClick={stopCamera}>Camera off</Button>
+          </div>
+          {phase === 'low' && tracking && <p className="text-center text-xs font-semibold text-electric-300" role="status">Depth reached — come back up</p>}
         </GlassCard>
       )}
 
       {state === 'denied' && (
-        <GlassCard className="space-y-3">
-          <Alert kind="error" className="flex items-start gap-2">
-            <IconAlert width={16} className="mt-0.5 shrink-0" />
-            <span>
-              Camera access was denied. ApexFit can’t see you — and that’s okay. You can train with
-              the <Link href="/workouts" className="font-semibold text-electric-200 underline">regular workout mode</Link> instead.
-            </span>
-          </Alert>
-          <p className="text-sm text-slate-400">To enable it later: open your browser’s site settings for this page, allow camera access, then retry.</p>
-          <Button variant="outline" onClick={startCamera} className="w-full">Try again</Button>
-        </GlassCard>
+        <Alert kind="error" className="flex items-start gap-2">
+          <IconAlert width={16} className="mt-0.5 shrink-0" />
+          <span><b>Camera permission denied.</b> Enable it in your browser’s site settings, then reload — the app never requests it without you tapping the button.</span>
+        </Alert>
       )}
-
       {state === 'error' && (
-        <GlassCard className="space-y-3">
-          <Alert kind="error">Couldn’t access the camera (it may be in use by another app, or not present on this device).</Alert>
-          <Button variant="outline" onClick={startCamera} className="w-full">Retry</Button>
-        </GlassCard>
+        <Alert kind="error">The camera couldn’t be started on this device. Close other camera apps and retry.</Alert>
       )}
-
       {state === 'unsupported' && (
-        <Alert kind="warning">This browser doesn’t support camera access (<code className="code">getUserMedia</code>). Try a recent Chrome, Edge, Safari or Firefox.</Alert>
+        <Alert kind="warning">This browser doesn’t expose camera APIs. Chrome on Android or Safari on iOS work best.</Alert>
       )}
 
-      {/* Roadmap of modular features */}
-      <GlassCard>
-        <h2 className="mb-3 text-sm font-bold uppercase tracking-[0.15em] text-slate-400">Module roadmap</h2>
-        <ul className="space-y-2.5 text-sm">
-          <li className="flex items-center gap-2.5 text-slate-400"><IconScan width={16} className="text-violet" /> MediaPipe pose landmarks → rep counting <Badge tone="amber">Planned</Badge></li>
-          <li className="flex items-center gap-2.5 text-slate-400"><IconMic width={16} className="text-violet" /> Voice commands (start / pause / count) <Badge tone="amber">Planned</Badge></li>
-          <li className="flex items-center gap-2.5 text-slate-300"><IconCheck width={16} className="text-mint" /> Guided workout sessions <Badge tone="green">Live</Badge></li>
-        </ul>
-      </GlassCard>
+      {state === 'active' && !tracking && engine.kind === 'ready' && (
+        <Alert kind="success" className="flex items-center gap-2">
+          <IconCheck width={16} /> Model ready — picking an exercise starts counting as soon as you tap “Start rep counting”.
+        </Alert>
+      )}
     </div>
   );
 }
