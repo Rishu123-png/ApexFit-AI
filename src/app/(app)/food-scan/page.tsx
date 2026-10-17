@@ -3,80 +3,159 @@
 import { useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
+import { addNutritionEntry } from '@/lib/db';
+import { claimArena } from '@/lib/arena/client';
+import { dateKey } from '@/lib/dates';
+import type { MealType } from '@/lib/types';
+import type { VisionFoodItem } from '@/lib/ai/vision-parse';
 import { GlassCard, Alert, Badge, Button } from '@/components/ui';
-import { IconScan, IconCamera, IconAlert, IconCheck, IconInfo } from '@/components/icons';
+import { IconScan, IconCamera, IconAlert, IconCheck, IconInfo, IconPlus, IconX } from '@/components/icons';
 
-type ScanState = 'idle' | 'preview' | 'calling' | 'done';
+type ScanState = 'idle' | 'preview' | 'calling' | 'results';
+interface EditableItem extends VisionFoodItem {
+  servings: number;
+  include: boolean;
+}
+
+/** Downscale a photo before upload (slow-network friendly). */
+async function downscaleToDataUrl(file: File, maxDim = 1024, quality = 0.82): Promise<string> {
+  const bmp = await createImageBitmap(file);
+  const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(bmp.width * scale);
+  canvas.height = Math.round(bmp.height * scale);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas unavailable');
+  ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', quality);
+}
 
 export default function FoodScanPage() {
-  const { getIdToken } = useAuth();
+  const { user, getIdToken } = useAuth();
   const fileRef = useRef<HTMLInputElement>(null);
   const [state, setState] = useState<ScanState>('idle');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
-  const [fileName, setFileName] = useState('');
-  const [resultNote, setResultNote] = useState<{ kind: 'warning' | 'error' | 'success'; text: string } | null>(null);
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [items, setItems] = useState<EditableItem[]>([]);
+  const [notes, setNotes] = useState('');
+  const [notice, setNotice] = useState<{ kind: 'warning' | 'error' | 'success' | 'info'; text: string } | null>(null);
+  const [meal, setMeal] = useState<MealType>('lunch');
+  const [logging, setLogging] = useState(false);
 
-  function pickFile() {
-    fileRef.current?.click();
+  function reset() {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    setDataUrl(null);
+    setItems([]);
+    setNotes('');
+    setNotice(null);
+    setState('idle');
+    if (fileRef.current) fileRef.current.value = '';
   }
 
-  function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
-    setResultNote(null);
+    setNotice(null);
     if (!file) return;
     if (!file.type.startsWith('image/')) {
-      setResultNote({ kind: 'error', text: 'Please choose an image file (JPG/PNG/HEIC).' });
+      setNotice({ kind: 'error', text: 'Please choose an image file (JPG/PNG/WebP).' });
       return;
     }
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setPreviewUrl(URL.createObjectURL(file));
-    setFileName(file.name);
-    setState('preview');
+    try {
+      setDataUrl(await downscaleToDataUrl(file));
+      setState('preview');
+    } catch {
+      setNotice({ kind: 'error', text: 'Couldn’t process that image in this browser.' });
+    }
   }
 
-  /**
-   * Calls the real server route. Today that route honestly reports that no
-   * vision provider is configured (503 VISION_NOT_CONFIGURED) — we surface
-   * exactly that instead of fabricating an analysis.
-   */
   async function analyse() {
+    if (!dataUrl) return;
     setState('calling');
-    setResultNote(null);
+    setNotice(null);
     try {
       const token = await getIdToken();
       const res = await fetch('/api/ai/food-scan', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileName, note: 'image upload wiring pending model provider' }),
+        body: JSON.stringify({ image: dataUrl }),
       });
-      const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
-      if (res.status === 503 && data.error?.startsWith('VISION_')) {
-        setResultNote({
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string; message?: string; items?: VisionFoodItem[]; notes?: string;
+      };
+      if (res.ok && data.items) {
+        setItems(data.items.map((it) => ({ ...it, servings: 1, include: true })));
+        setNotes(data.notes ?? '');
+        setState('results');
+      } else if (res.status === 503 && (data.error === 'VISION_NOT_CONFIGURED' || data.error === 'GROQ_NOT_CONFIGURED')) {
+        setNotice({
           kind: 'warning',
-          text: 'Food-photo analysis is not connected yet — no nutrition values will be shown for this photo. Once a vision-capable model is wired into the server route, results will appear here as labelled estimates.',
+          text: 'Food-photo analysis isn’t enabled on the server yet (GROQ_VISION_ENABLED + Groq keys). Nothing was analysed and no numbers were invented — log accurately via the nutrition tracker instead.',
         });
+        setState('preview');
+      } else if (res.status === 429) {
+        setNotice({ kind: 'warning', text: 'Scan limit reached for now — try again later.' });
+        setState('preview');
+      } else if (res.status === 413 || res.status === 400 || res.status === 422) {
+        setNotice({ kind: 'error', text: data.message ?? 'The photo couldn’t be analysed.' });
+        setState('preview');
       } else if (res.status === 401) {
-        setResultNote({ kind: 'error', text: 'Your session expired. Please sign in again.' });
-      } else if (!res.ok) {
-        setResultNote({ kind: 'error', text: data.message ?? 'The scan service is unavailable right now.' });
+        setNotice({ kind: 'error', text: 'Your session expired. Please sign in again.' });
+        setState('preview');
       } else {
-        // Future success path: render returned estimate here.
-        setResultNote({ kind: 'success', text: 'Analysis complete (unexpected in this build).' });
+        setNotice({ kind: 'error', text: 'The scan service is unavailable right now. Try again shortly.' });
+        setState('preview');
       }
     } catch {
-      setResultNote({ kind: 'error', text: 'Network error while contacting the scan service.' });
-    } finally {
+      setNotice({ kind: 'error', text: 'Network error while contacting the scan service.' });
       setState('preview');
     }
   }
 
-  function reset() {
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPreviewUrl(null);
-    setFileName('');
-    setState('idle');
-    setResultNote(null);
-    if (fileRef.current) fileRef.current.value = '';
+  function setItem(i: number, patch: Partial<EditableItem>) {
+    setItems((prev) => prev.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
+  }
+
+  async function logItems() {
+    const chosen = items.filter((i) => i.include);
+    if (chosen.length === 0 || !user) return;
+    setLogging(true);
+    setNotice(null);
+    try {
+      const today = dateKey();
+      for (const it of chosen) {
+        await addNutritionEntry(user.uid, today, {
+          name: it.name,
+          portionLabel: it.portionLabel,
+          meal,
+          servings: it.servings,
+          calories: it.calories,
+          protein: it.protein,
+          carbs: it.carbs,
+          fat: it.fat,
+          source: 'estimate',
+          loggedAt: Date.now(),
+        });
+      }
+      // Best-effort missions (server re-validates)
+      try {
+        const token = await getIdToken();
+        await claimArena(token, 'nutrition_milestone').catch(() => undefined);
+        await claimArena(token, 'daily_mission').catch(() => undefined);
+      } catch { /* arena optional */ }
+      setNotice({ kind: 'success', text: `${chosen.length} item${chosen.length > 1 ? 's' : ''} logged to ${meal} as estimates.` });
+      setState('idle');
+      setItems([]);
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      setPreviewUrl(null);
+      setDataUrl(null);
+    } catch {
+      setNotice({ kind: 'error', text: 'Couldn’t save to your tracker. Check your connection.' });
+    } finally {
+      setLogging(false);
+    }
   }
 
   return (
@@ -86,65 +165,140 @@ export default function FoodScanPage() {
           Food <span className="neon-text">scanner</span>
         </h1>
         <p className="mt-1 text-sm text-slate-400">
-          Snap a meal photo and get instant nutrition estimates — coming as part of the AI Fitness &amp; Nutrition plan.
+          Photo → editable macro estimates → one-tap logging. Every value is an AI estimate you confirm before saving.
         </p>
       </div>
 
       <Alert kind="info" className="flex items-start gap-2">
         <IconInfo width={16} className="mt-0.5 shrink-0" />
         <span>
-          This flow is fully wired but <b>intentionally honest</b>: until a vision-capable AI model is
-          connected on the server, it will tell you so instead of inventing nutrition numbers. For
-          accurate logging today, use the <Link href="/nutrition" className="font-semibold text-electric-200 underline">nutrition tracker</Link>.
+          Photos are sent to the server once (over HTTPS) when you press <b>Analyse</b> — they are
+          never stored. Estimates carry uncertainty; for accuracy, prefer the{' '}
+          <Link href="/nutrition" className="font-semibold text-electric-200 underline">nutrition tracker</Link>.
         </span>
       </Alert>
 
       <GlassCard className="space-y-4">
-        <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden" onChange={onFile} aria-label="Choose a food photo" />
+        <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={onFile} aria-label="Choose a food photo" />
 
-        {state !== 'calling' && !previewUrl && (
+        {state === 'idle' && !previewUrl && (
           <button
-            onClick={pickFile}
+            onClick={() => fileRef.current?.click()}
             className="flex w-full flex-col items-center gap-3 rounded-2xl border-2 border-dashed border-electric-500/30 bg-electric-500/5 px-6 py-12 text-center transition hover:border-electric-400/60 hover:bg-electric-500/10"
           >
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-electric-500/30 bg-electric-500/10 text-electric-300">
               <IconCamera width={26} />
             </div>
             <p className="font-semibold text-slate-200">Tap to take a photo or choose from gallery</p>
-            <p className="text-xs text-slate-500">JPG / PNG · your photo is only sent when you press “Analyse”</p>
+            <p className="text-xs text-slate-500">Auto-downscaled for slow networks · nothing uploaded until you press Analyse</p>
           </button>
         )}
 
-        {previewUrl && (
+        {previewUrl && (state === 'preview' || state === 'calling') && (
           <div className="space-y-3">
             <div className="overflow-hidden rounded-2xl border border-white/10">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={previewUrl} alt={`Selected food photo${fileName ? `: ${fileName}` : ''}`} className="mx-auto max-h-[320px] w-auto object-contain" />
+              <img src={previewUrl} alt="Selected food" className="mx-auto max-h-[300px] w-auto object-contain" />
             </div>
-            {resultNote && (
-              <Alert kind={resultNote.kind} className="flex items-start gap-2">
+            {notice && (
+              <Alert kind={notice.kind === 'info' ? 'info' : notice.kind} className="flex items-start gap-2">
                 <IconAlert width={16} className="mt-0.5 shrink-0" />
-                <span>{resultNote.text}</span>
+                <span>{notice.text}</span>
               </Alert>
             )}
             <div className="flex gap-2">
               <Button glow onClick={analyse} loading={state === 'calling'} className="flex-1">
-                <IconScan width={15} /> Analyse photo
+                <IconScan width={15} /> {state === 'calling' ? 'Analysing…' : 'Analyse photo'}
               </Button>
-              <Button variant="ghost" onClick={reset}>Remove</Button>
+              <Button variant="ghost" onClick={reset} disabled={state === 'calling'}>Remove</Button>
             </div>
           </div>
+        )}
+
+        {state === 'results' && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold">Detected items</h2>
+              <Badge tone="amber"><IconAlert width={11} /> all estimates</Badge>
+            </div>
+            {notes && <p className="text-xs text-slate-400">{notes}</p>}
+            {items.map((it, i) => (
+              <div key={i} className="rounded-2xl border border-white/10 bg-white/[0.03] p-3.5">
+                <div className="mb-2 flex items-center gap-2">
+                  <input
+                    className="input flex-1 py-1.5 text-sm"
+                    value={it.name}
+                    onChange={(e) => setItem(i, { name: e.target.value.slice(0, 120) })}
+                    aria-label={`Name of item ${i + 1}`}
+                  />
+                  <Badge tone={it.confidence >= 0.7 ? 'blue' : 'amber'}>{Math.round(it.confidence * 100)}%</Badge>
+                  <button
+                    onClick={() => setItem(i, { include: !it.include })}
+                    className={`rounded-lg p-1.5 transition ${it.include ? 'text-mint' : 'text-slate-600'}`}
+                    aria-label={it.include ? `Exclude ${it.name}` : `Include ${it.name}`}
+                  >
+                    {it.include ? <IconCheck width={16} /> : <IconX width={16} />}
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                  {(['portionLabel', 'calories', 'protein', 'carbs', 'fat'] as const).map((k) => (
+                    <label key={k} className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                      {k === 'portionLabel' ? 'portion' : k}
+                      {k === 'portionLabel' ? (
+                        <input className="input mt-1 w-full py-1 text-xs" value={it.portionLabel} onChange={(e) => setItem(i, { portionLabel: e.target.value.slice(0, 80) })} />
+                      ) : (
+                        <input
+                          className="input mt-1 w-full py-1 text-xs"
+                          inputMode="decimal"
+                          value={it[k]}
+                          onChange={(e) => {
+                            const n = Number(e.target.value);
+                            if (Number.isFinite(n)) setItem(i, { [k]: Math.min(3000, Math.max(0, n)) } as Partial<EditableItem>);
+                          }}
+                        />
+                      )}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <div className="flex items-center gap-2">
+              <label htmlFor="scan-meal" className="text-xs font-semibold uppercase tracking-wider text-slate-400">Log to</label>
+              <select id="scan-meal" className="input w-auto py-1.5 text-sm" value={meal} onChange={(e) => setMeal(e.target.value as MealType)}>
+                <option value="breakfast">Breakfast</option>
+                <option value="lunch">Lunch</option>
+                <option value="snacks">Snacks</option>
+                <option value="dinner">Dinner</option>
+              </select>
+              <div className="flex-1" />
+              <Button glow onClick={logItems} loading={logging} disabled={items.every((i) => !i.include)}>
+                <IconPlus width={15} /> Log {items.filter((i) => i.include).length} item{items.filter((i) => i.include).length !== 1 ? 's' : ''}
+              </Button>
+            </div>
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => setState('preview')}>Back to photo</Button>
+              <Button variant="ghost" onClick={reset}>Discard</Button>
+            </div>
+          </div>
+        )}
+
+        {state === 'idle' && notice && (
+          <Alert kind={notice.kind === 'info' ? 'info' : notice.kind} className="flex items-start gap-2">
+            <IconAlert width={16} className="mt-0.5 shrink-0" />
+            <span>{notice.text}</span>
+          </Alert>
         )}
       </GlassCard>
 
       <GlassCard>
-        <h2 className="mb-3 text-sm font-bold uppercase tracking-[0.15em] text-slate-400">How it will work</h2>
+        <h2 className="mb-3 text-sm font-bold uppercase tracking-[0.15em] text-slate-400">How estimates work</h2>
         <ol className="space-y-2.5 text-sm text-slate-300">
           {[
-            'Photo is sent to the server over HTTPS along with your verified session token.',
-            'A vision-capable model identifies dishes and portion sizes.',
-            'Macros are returned as estimates and logged to your day with an “estimate” label — never silently as verified data.',
-            'You confirm or edit portions before anything is saved.',
+            'Your photo is downscaled on-device, sent once to the server with your verified session, and analysed by a vision model.',
+            'Dishes and portions come back as labelled estimates with confidence scores — never as “verified” data.',
+            'You correct names, portions and macros before anything is logged. Corrections are what gets saved.',
+            'Estimates can be wrong, especially for mixed dishes, gravies and drinks — when in doubt, adjust the portion.',
           ].map((s, i) => (
             <li key={i} className="flex gap-3">
               <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-electric-500/15 text-xs font-bold text-electric-300">{i + 1}</span>
@@ -152,10 +306,6 @@ export default function FoodScanPage() {
             </li>
           ))}
         </ol>
-        <div className="mt-4 flex items-center gap-2">
-          <Badge tone="amber"><IconAlert width={11} /> Model not connected</Badge>
-          <Badge tone="green"><IconCheck width={11} /> Server route ready</Badge>
-        </div>
       </GlassCard>
     </div>
   );
