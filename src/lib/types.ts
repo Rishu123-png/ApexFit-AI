@@ -37,8 +37,14 @@ export interface NutritionEntry {
   protein: number;
   carbs: number;
   fat: number;
-  /** verified = reference data (e.g. IFCT); estimate = AI/home-style approximation */
-  source: 'verified' | 'estimate';
+  /**
+   * Honest provenance (spec §9):
+   *  - 'reference' = values from the in-app curated food database
+   *  - 'estimate'  = AI/home-style approximation, user-correctable
+   *  - 'custom'    = free text typed by the user
+   * Legacy rows may carry 'verified' (≈ reference); nothing new is written with it.
+   */
+  source: 'reference' | 'estimate' | 'custom';
   loggedAt: number;
 }
 
@@ -105,5 +111,6 @@ export interface FoodItem {
   protein: number;
   carbs: number;
   fat: number;
-  source: 'verified' | 'estimate';
+  /** reference = curated food-DB values; estimate = home-style/AI approximation */
+  source: 'reference' | 'estimate';
 }
