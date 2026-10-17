@@ -1,0 +1,142 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": "auth !== null && auth.uid === $uid",
+
+        "profile": {
+          ".validate": "newData.hasChildren(['displayName', 'email'])",
+          "displayName": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80" },
+          "email": { ".validate": "newData.isString() && newData.val().length <= 120" },
+          "$other": { ".validate": true }
+        },
+
+        "preferences": {
+          ".validate": "newData.hasChildren(['calorieTarget', 'proteinTarget', 'waterTargetMl'])",
+          "calorieTarget": { ".validate": "newData.isNumber() && newData.val() >= 800 && newData.val() <= 8000" },
+          "proteinTarget": { ".validate": "newData.isNumber() && newData.val() >= 20 && newData.val() <= 400" },
+          "waterTargetMl": { ".validate": "newData.isNumber() && newData.val() >= 500 && newData.val() <= 8000" },
+          "$other": { ".validate": true }
+        },
+
+        "nutrition": {
+          "$date": {
+            "$entryId": {
+              ".validate": "newData.hasChildren(['name', 'meal', 'servings', 'calories', 'protein', 'carbs', 'fat', 'source'])",
+              "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120" },
+              "portionLabel": { ".validate": "newData.isString() && newData.val().length <= 80" },
+              "meal": { ".validate": "newData.isString() && (newData.val() === 'breakfast' || newData.val() === 'lunch' || newData.val() === 'snacks' || newData.val() === 'dinner')" },
+              "servings": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 20" },
+              "calories": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3000" },
+              "protein": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300" },
+              "carbs": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 600" },
+              "fat": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300" },
+              "source": { ".validate": "newData.val() === 'verified' || newData.val() === 'estimate'" },
+              "loggedAt": { ".validate": "newData.isNumber()" },
+              "$other": { ".validate": true }
+            }
+          }
+        },
+
+        "hydration": {
+          "$date": {
+            ".validate": "newData.hasChildren(['totalMl'])",
+            "totalMl": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 15000" },
+            "logs": {
+              "$logId": {
+                ".validate": "newData.hasChildren(['ml', 'ts'])",
+                "ml": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 2000" },
+                "ts": { ".validate": "newData.isNumber()" },
+                "$other": { ".validate": true }
+              }
+            },
+            "$other": { ".validate": true }
+          }
+        },
+
+        "workouts": {
+          "$workoutId": {
+            ".validate": "newData.hasChildren(['planId', 'planName', 'startedAt', 'durationSec', 'totalSets', 'status'])",
+            "planId": { ".validate": "newData.isString() && newData.val().length <= 60" },
+            "planName": { ".validate": "newData.isString() && newData.val().length <= 120" },
+            "startedAt": { ".validate": "newData.isNumber()" },
+            "endedAt": { ".validate": "newData.isNumber()" },
+            "durationSec": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 21600" },
+            "totalSets": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500" },
+            "status": { ".validate": "newData.val() === 'completed' || newData.val() === 'partial'" },
+            "exercises": {
+              "$exIdx": {
+                ".validate": "newData.hasChildren(['name', 'targetSets', 'completedSets'])",
+                "$other": { ".validate": true }
+              }
+            },
+            "$other": { ".validate": true }
+          }
+        },
+
+        "$other": { ".validate": true }
+      }
+    },
+
+    "arenaProfiles": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      },
+      ".indexOn": ["arenaId"]
+    },
+
+    "arenaScores": {
+      ".read": false,
+      ".write": false,
+      "lifetime": { ".indexOn": ["score"] },
+      "weekly": { "$week": { ".indexOn": ["score"] } },
+      "season": { "$season": { ".indexOn": ["score"] } }
+    },
+
+    "arenaEvents": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+
+    "arenaState": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+
+    "friendRequests": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+
+    "friendRequestsSent": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+
+    "friendships": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+
+    "blocks": {
+      "$uid": {
+        ".read": "auth !== null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+
+    "$other": { ".read": false, ".write": false }
+  }
+}
