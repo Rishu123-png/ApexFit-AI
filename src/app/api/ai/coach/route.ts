@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyRequestUser, getUserAiContext, AdminNotConfiguredError } from '@/lib/firebase/admin';
+import { verifyRequestUser, getUserAiContext, AdminNotConfiguredError, getAdminDb } from '@/lib/firebase/admin';
 import { groqChat, GroqNotConfiguredError, GroqRequestError, type ChatMessage } from '@/lib/ai/groq';
 import { rateLimit } from '@/lib/ai/ratelimit';
+import { recommendToday, describeRecommendation } from '@/lib/core/adaptive';
+import { dayKeyInTz } from '@/lib/arena/periods';
+import { daysAgoTs } from '@/lib/dates';
+import type { WorkoutSession } from '@/lib/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -138,6 +142,29 @@ export async function POST(req: NextRequest) {
   }
   if (body.context.streakDays !== undefined && body.context.streakDays > 0)
     contextLines.push(`Current consistency streak: ${body.context.streakDays} day(s)`);
+
+  // Deterministic adaptive guidance — computed from the user's own sealed
+  // workout records on the server (the LLM may explain, never override it).
+  try {
+    const q = await getAdminDb()
+      .ref(`users/${uid}/workouts`)
+      .orderByChild('startedAt')
+      .startAt(daysAgoTs(6))
+      .limitToLast(100)
+      .get();
+    const tz = 'Asia/Kolkata';
+    const recent = q.exists()
+      ? Object.values(q.val() as Record<string, WorkoutSession>)
+          .filter((s) => s.verified === true) // measured, not self-reported
+          .map((s) => ({ dayKey: dayKeyInTz(new Date(s.startedAt), tz), durationSec: s.serverDurationSec ?? s.durationSec, planId: s.planId }))
+      : [];
+    const experience =
+      prof && (prof.experience === 'intermediate' || prof.experience === 'advanced') ? prof.experience : 'beginner';
+    const rec = recommendToday({ experience, todayKey: dayKeyInTz(new Date(), tz), recent });
+    contextLines.push(describeRecommendation(rec));
+  } catch {
+    contextLines.push('Adaptive engine: unavailable right now — default to conservative advice.');
+  }
 
   const messages: ChatMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT },
