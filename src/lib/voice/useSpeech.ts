@@ -33,7 +33,7 @@ declare global {
 
 export type SpeechState =
   | { kind: 'idle' }
-  | { kind: 'listening' }
+  | { kind: 'listening'; partial?: string }
   | { kind: 'processing' }
   | { kind: 'unsupported' }
   | { kind: 'denied' }
@@ -63,13 +63,18 @@ export function useSpeechRecognition(opts: { onTranscript: (text: string) => voi
       recRef.current = rec;
       rec.lang = opts.lang ?? 'en-IN';
       rec.continuous = false;
-      rec.interimResults = false;
+      rec.interimResults = true; // stream partial words so the user can SEE the mic hearing them
       rec.maxAlternatives = 1;
 
       rec.onresult = (e) => {
-        const text = e.results[e.resultIndex]?.[0]?.transcript ?? '';
-        if (text.trim()) onTranscriptRef.current(text.trim());
-        setState({ kind: 'idle' });
+        const item = e.results[e.resultIndex];
+        const text = item?.[0]?.transcript ?? '';
+        if (item?.isFinal) {
+          if (text.trim()) onTranscriptRef.current(text.trim());
+          setState({ kind: 'idle' });
+        } else if (text.trim()) {
+          setState({ kind: 'listening', partial: text.trim() });
+        }
       };
       rec.onerror = (e) => {
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
