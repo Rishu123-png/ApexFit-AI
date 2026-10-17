@@ -43,7 +43,7 @@ describe('workout_completed eligibility', () => {
       workoutAwardsToday: 0,
     });
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.reason).toMatch(/not server-verified/i);
+    if (!r.ok) expect(r.reason).toMatch(/(self-reported|plausibility)/i);
   });
 
   it('rejects explicitly unverified sessions even with complete data', () => {
