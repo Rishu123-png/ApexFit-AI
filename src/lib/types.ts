@@ -69,6 +69,10 @@ export interface WorkoutSession {
   totalSets: number;
   status: 'completed' | 'partial';
   exercises: SessionExercise[];
+  /** server-only fields — database rules forbid clients from writing these */
+  verified?: boolean;
+  sealedAt?: number;
+  serverDurationSec?: number;
 }
 
 export interface Exercise {
