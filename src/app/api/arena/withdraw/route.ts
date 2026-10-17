@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireArenaUser, isErrorResponse } from '@/lib/arena/http';
 import { withdrawFromArena } from '@/lib/arena/server';
-import { rateLimit } from '@/lib/ai/ratelimit';
+import { checkRateLimit } from '@/lib/ai/ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   if (isErrorResponse(auth)) return auth;
   const { uid } = auth;
 
-  const rl = rateLimit(`arena-withdraw:${uid}`, 6, 60 * 60 * 1000);
+  const rl = await checkRateLimit(`arena-withdraw:${uid}`, 6, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
 
   await withdrawFromArena(uid);
