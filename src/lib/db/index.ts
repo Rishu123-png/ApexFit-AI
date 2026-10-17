@@ -184,3 +184,25 @@ export async function getPreferencesOnce(uid: string): Promise<Preferences> {
   const s = await get(userRef(uid, 'preferences'));
   return s.exists() ? { ...DEFAULT_PREFERENCES, ...(s.val() as Preferences) } : DEFAULT_PREFERENCES;
 }
+
+// ── Recovery check-ins (readiness factors; user-owned, private) ──────────────
+
+export interface RecoveryCheckinRecord {
+  sleepHrs?: number;
+  energy?: number; // 1–5
+  soreness?: number; // 1–5
+  createdAt: number;
+}
+
+export async function saveCheckin(uid: string, dayKey: string, checkin: Omit<RecoveryCheckinRecord, 'createdAt'>): Promise<void> {
+  await set(userRef(uid, `checkins/${dayKey}`), { ...checkin, createdAt: Date.now() });
+}
+
+export function subscribeCheckins(
+  uid: string,
+  days: number,
+  cb: (items: Record<string, RecoveryCheckinRecord>) => void,
+): Unsubscribe {
+  const q = query(userRef(uid, 'checkins'), limitToLast(days));
+  return onValue(q, (s) => cb(s.exists() ? (s.val() as Record<string, RecoveryCheckinRecord>) : {}));
+}
