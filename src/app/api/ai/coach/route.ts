@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyRequestUser, getUserAiContext, AdminNotConfiguredError, getAdminDb } from '@/lib/firebase/admin';
 import { groqChat, GroqNotConfiguredError, GroqRequestError, type ChatMessage } from '@/lib/ai/groq';
-import { rateLimit } from '@/lib/ai/ratelimit';
+import { checkRateLimit, clientIp } from '@/lib/ai/ratelimit';
 import { recommendToday, describeRecommendation } from '@/lib/core/adaptive';
+import { computeReadiness } from '@/lib/core/readiness';
+import { buildExerciseTrends, suggestNextForExercise } from '@/lib/core/progression';
 import { dayKeyInTz } from '@/lib/arena/periods';
-import { daysAgoTs } from '@/lib/dates';
+import { daysAgoTs, dateKey, last7DayLabels } from '@/lib/dates';
 import type { WorkoutSession } from '@/lib/types';
+import type { RecoveryCheckinRecord } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,6 +78,8 @@ Rules you must always follow:
 - If the user describes pain, dizziness, or symptoms of illness, advise them to stop and consult a qualified professional.
 - You may reference the user's Apex Arena level, verified XP and streaks to motivate them and suggest reasonable missions — but celebrate rest days too, and NEVER pressure the user to exercise on days when recovery is the right call.
 - NEVER invent workouts, scores, ranks or achievements the user hasn't earned.
+- When "Adaptive engine" or "Apex Readiness" context lines are present, treat them as authoritative constraints computed by deterministic rules: explain and personalize around them, but NEVER override or contradict their rest/light-day call, and never turn an estimate into a medical claim.
+- Structure substantial answers as: Recommendation → Why (reasoning) → Confidence/limits → Next action → Safety note when the topic touches pain, food restriction, or fatigue.
 - Keep answers concise (under 180 words unless a plan is requested). Use short paragraphs or bullets.`;
 
 export async function POST(req: NextRequest) {
@@ -97,8 +102,15 @@ export async function POST(req: NextRequest) {
   }
   const uid = decoded.uid;
 
-  // 2. Rate limit per verified user.
-  const rl = rateLimit(`coach:${uid}`, RL_LIMIT, RL_WINDOW_MS);
+  // 2. Rate limits: per-IP cost bucket + per verified user bucket (spec §10).
+  const rlIp = await checkRateLimit(`coach:ip:${clientIp(req)}`, 200, RL_WINDOW_MS);
+  if (!rlIp.ok) {
+    return NextResponse.json(
+      { error: 'RATE_LIMITED', retryAfterSec: rlIp.retryAfterSec },
+      { status: 429, headers: { 'Retry-After': String(rlIp.retryAfterSec) } },
+    );
+  }
+  const rl = await checkRateLimit(`coach:${uid}`, RL_LIMIT, RL_WINDOW_MS);
   if (!rl.ok) {
     return NextResponse.json(
       { error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec },
@@ -155,13 +167,51 @@ export async function POST(req: NextRequest) {
     const tz = 'Asia/Kolkata';
     const recent = q.exists()
       ? Object.values(q.val() as Record<string, WorkoutSession>)
-          .filter((s) => s.verified === true) // measured, not self-reported
+          .filter((s) => s.verified === true) // plausibility-checked, not self-reported
           .map((s) => ({ dayKey: dayKeyInTz(new Date(s.startedAt), tz), durationSec: s.serverDurationSec ?? s.durationSec, planId: s.planId }))
       : [];
     const experience =
       prof && (prof.experience === 'intermediate' || prof.experience === 'advanced') ? prof.experience : 'beginner';
     const rec = recommendToday({ experience, todayKey: dayKeyInTz(new Date(), tz), recent });
     contextLines.push(describeRecommendation(rec));
+
+    // Readiness estimate (deterministic; missing inputs stated, never guessed high)
+    const all7 = q.exists() ? Object.values(q.val() as Record<string, WorkoutSession>) : [];
+    const days = last7DayLabels();
+    const mins = new Map<string, number>(days.map((d) => [d.key, 0]));
+    for (const s of all7) {
+      const k = dateKey(new Date(s.startedAt));
+      mins.set(k, (mins.get(k) ?? 0) + (s.durationSec ?? 0) / 60);
+    }
+    const checkinSnap = await getAdminDb().ref(`users/${uid}/checkins/${dateKey()}`).get();
+    const checkin = (checkinSnap.exists() ? checkinSnap.val() : null) as RecoveryCheckinRecord | null;
+    const streakDays = typeof body.context.streakDays === 'number' ? body.context.streakDays : 0;
+    const ready = computeReadiness({
+      minutes7d: days.map((d) => mins.get(d.key) ?? 0),
+      streakDays,
+      checkin: checkin
+        ? { sleepHrs: checkin.sleepHrs, energy: checkin.energy, soreness: checkin.soreness }
+        : null,
+    });
+    contextLines.push(
+      `Apex Readiness (estimate, ${ready.missingSubjectiveInputs} subjective inputs missing): ${ready.score}/100 [${ready.band}] → ${ready.recommendation}. ${ready.summary}`,
+    );
+
+    // One bounded progression suggestion (deterministic; only with enough history)
+    const trends = buildExerciseTrends(
+      all7
+        .slice(-20)
+        .map((s) => ({ dayKey: dateKey(new Date(s.startedAt)), exercises: s.exercises ?? [] })),
+    );
+    for (const [exerciseId, pts] of trends) {
+      const suggestion = suggestNextForExercise(exerciseId, pts);
+      if (suggestion && suggestion.deltaSets !== 0) {
+        contextLines.push(
+          `Progression suggestion (deterministic, sets-only): ${exerciseId.replace(/-/g, ' ')} → ${suggestion.nextTargetSets} sets next (${suggestion.deltaSets > 0 ? 'step up' : 'easier deload'}). ${suggestion.rationale}`,
+        );
+        break; // one suggestion max — keep the prompt lean
+      }
+    }
   } catch {
     contextLines.push('Adaptive engine: unavailable right now — default to conservative advice.');
   }
