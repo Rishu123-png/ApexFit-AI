@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireArenaUser, isErrorResponse } from '@/lib/arena/http';
 import { getArenaProfile, updateArenaProfile } from '@/lib/arena/server';
 import { validateDisplayName, normalizeDisplayName, isValidAvatarId, isValidVisibility, isValidTimeZone } from '@/lib/arena/validate';
-import { rateLimit } from '@/lib/ai/ratelimit';
+import { checkRateLimit } from '@/lib/ai/ratelimit';
 import type { ArenaProfile } from '@/lib/arena/types';
 
 export const runtime = 'nodejs';
@@ -17,7 +17,7 @@ export async function POST(req: NextRequest) {
   if (isErrorResponse(auth)) return auth;
   const { uid } = auth;
 
-  const rl = rateLimit(`arena-settings:${uid}`, 30, 60 * 60 * 1000);
+  const rl = await checkRateLimit(`arena-settings:${uid}`, 30, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
 
   let body: Record<string, unknown>;
