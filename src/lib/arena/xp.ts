@@ -24,6 +24,8 @@ export const ARENA_XP_CONFIG = {
   /** nutrition milestone: enough real meals, without rewarding undereating */
   minNutritionEntries: 3,
   minNutritionMeals: 2,
+  // Anti-restriction GUARD (not a target): the nutrition milestone is rejected
+  // below this total so restrictive eating can never look "profitable".
   nutritionMinCalories: 800,
   /** never reward extreme intake either: cap factor × user's calorie target */
   nutritionCalorieMaxFactor: 1.6,
@@ -73,7 +75,7 @@ export function checkEligibility(
       const s = facts.session;
       if (!s) return { ok: false, reason: 'Workout session not found.' };
       if (s.verified !== true)
-        return { ok: false, reason: 'Session is not server-verified — unverified activity earns no XP.' };
+        return { ok: false, reason: 'Session has no server plausibility check — self-reported activity earns no XP.' };
       if (cfg.mobilityPlanIds.includes(s.planId))
         return { ok: false, reason: 'Mobility sessions earn the mobility reward instead.' };
       if (s.status !== 'completed')
@@ -88,7 +90,7 @@ export function checkEligibility(
       const s = facts.session;
       if (!s) return { ok: false, reason: 'Workout session not found.' };
       if (s.verified !== true)
-        return { ok: false, reason: 'Session is not server-verified — unverified activity earns no XP.' };
+        return { ok: false, reason: 'Session has no server plausibility check — self-reported activity earns no XP.' };
       if (!cfg.mobilityPlanIds.includes(s.planId))
         return { ok: false, reason: 'This plan is not a mobility/recovery session.' };
       if (s.status !== 'completed')

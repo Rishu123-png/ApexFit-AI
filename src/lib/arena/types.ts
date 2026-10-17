@@ -36,6 +36,13 @@ export interface ArenaEvent {
   weekKey: string;
   seasonKey: string;
   createdAt: number;
+  /** Durable state machine (§6): pending → applied | failed(retryable) | cap_limited(closed).
+   *  Events written before this field existed have `status === undefined`
+   *  and are treated as already applied (replay-safe). */
+  status?: 'pending' | 'applied' | 'failed' | 'cap_limited';
+  attempts?: number;
+  error?: string;
+  appliedAt?: number;
 }
 
 /** Private XP balance (server-only path). Never deleted on opt-out. */
@@ -104,7 +111,16 @@ export interface LeaderboardResponse {
 }
 
 export interface ArenaClaimResult {
-  status: 'awarded' | 'already_awarded' | 'not_eligible' | 'daily_cap' | 'not_participating';
+  status:
+    | 'awarded'
+    | 'already_awarded'
+    | 'not_eligible'
+    | 'daily_cap'
+    | 'not_participating'
+    /** a concurrent identical claim is being applied — safe to poll again */
+    | 'busy'
+    /** event recorded but aggregate update failed — retry the same claim */
+    | 'failed';
   reason?: string;
   xpAwarded: number;
   lifetime?: { xp: number; level: number; leveledUp: boolean };

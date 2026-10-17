@@ -10,15 +10,15 @@ import 'server-only';
  */
 import { randomBytes } from 'crypto';
 import { getAdminDb } from '@/lib/firebase/admin';
-import { ARENA_XP_CONFIG, applyDailyCap, arenaEventId, checkEligibility, fbSafeKey, type NutritionDayLike, type SessionLike } from './xp';
+import { ARENA_XP_CONFIG, arenaEventId, checkEligibility, fbSafeKey, type NutritionDayLike, type SessionLike } from './xp';
 import { levelOf } from './levels';
 import { dayKeyInTz, weekKeyInTz, seasonKeyInTz, weekStartMsInTz, startOfDayMsInTz } from './periods';
 import { assignRanks, paginate } from './ranking';
 import { projectionPlan } from './projections';
+import { decideDailyAward, eventDecision, type StoredArenaEvent } from './rewardPolicy';
 import type {
   ArenaClaimResult,
   ArenaDayCounter,
-  ArenaEvent,
   ArenaEventType,
   ArenaLifetimeState,
   ArenaProfile,
@@ -304,81 +304,145 @@ export async function awardXp({
   });
   if (!eligibility.ok) return { status: 'not_eligible', reason: eligibility.reason, xpAwarded: 0 };
 
-  // ── 2. Daily cap ──
-  const cap = applyDailyCap(dayCounter.xp, xp);
-  if (!cap.ok) return { status: 'daily_cap', reason: cap.reason, xpAwarded: 0 };
-
-  // ── 3. Idempotency: claim the event ID transactionally. ──
+  // ── 2. Durable, idempotent event state machine (spec §6).
+  //        Event record = pending → applied | failed(retryable) | cap_limited(closed).
+  //        Stage flags make every step recoverable after a partial failure. ──
   const eventKey = fbSafeKey(arenaEventId(type, { sessionId: sourceId, dayKey, weekKey }));
-  const event: ArenaEvent = { type, sourceId, xp, dayKey, weekKey, seasonKey, createdAt: Date.now() };
-  const claim = await db.ref(`arenaEvents/${uid}/${eventKey}`).transaction((cur) => (cur ? undefined : event), undefined, false);
-  // `undefined` aborts when the event already exists.
-  if (claim.committed !== true) {
-    return { status: 'already_awarded', reason: 'This activity was already rewarded.', xpAwarded: 0 };
+  const eventRef = db.ref(`arenaEvents/${uid}/${eventKey}`);
+  const existing = (await eventRef.get()).val() as StoredArenaEvent | null;
+  const decision = eventDecision(existing, Date.now());
+
+  if (decision.action === 'replay') {
+    return decision.status === 'cap_limited'
+      ? { status: 'daily_cap', reason: 'Daily cap was already reached when this event was recorded.', xpAwarded: 0 }
+      : { status: 'already_awarded', reason: 'This activity was already rewarded.', xpAwarded: 0 };
+  }
+  if (decision.action === 'in-progress') {
+    return { status: 'busy', reason: 'This reward is being processed — retry in a few seconds.', xpAwarded: 0 };
   }
 
-  // ── 4. Move aggregates transactionally. If an aggregate transaction fails,
-  //        the event remains the source of truth and can be reprocessed.
-  //        Projections follow CURRENT consent (projectionPlan, A2 fix). ──
-  const plan = projectionPlan(true, profile.visibility);
+  let event: StoredArenaEvent;
+  if (decision.action === 'create') {
+    event = { type, sourceId, xp, dayKey, weekKey, seasonKey, createdAt: Date.now(), status: 'pending', attempts: 1 };
+    const claimTxn = await eventRef.transaction((cur) => (cur ? undefined : event), undefined, false);
+    if (claimTxn.committed !== true) {
+      // An identical claim landed concurrently — answer from its state, never double-award.
+      const snap2 = (await eventRef.get()).val() as StoredArenaEvent | null;
+      const d2 = eventDecision(snap2, Date.now());
+      return d2.action === 'replay'
+        ? { status: d2.status === 'cap_limited' ? 'daily_cap' : 'already_awarded', xpAwarded: 0 }
+        : { status: 'busy', reason: 'A concurrent identical claim is in progress.', xpAwarded: 0 };
+    }
+  } else {
+    // Retry of a failed/stale-pending event: the STORED record is authoritative.
+    event = { ...decision.event, status: 'pending', attempts: (decision.event.attempts ?? 0) + 1 };
+    await eventRef.update({ status: 'pending', attempts: event.attempts, error: null });
+  }
+
+  // ── 3. Apply stages, durably marking each one on the event. On ANY failure
+  //        the event is marked 'failed' and the same claim may safely retry —
+  //        nothing reports success until every stage is durably applied. ──
+  const isWorkoutType = event.type === 'workout_completed' || event.type === 'mobility_session';
+
   try {
-    await db.ref(`arenaState/${uid}/days/${dayKey}`).transaction((cur: ArenaDayCounter | null) => ({
-      xp: (cur?.xp ?? 0) + xp,
-      workoutAwards:
-        (cur?.workoutAwards ?? 0) + (type === 'workout_completed' || type === 'mobility_session' ? 1 : 0),
-    }));
-
-    const lifetimeTxn = await db
-      .ref(`arenaState/${uid}/lifetime`)
-      .transaction((cur: ArenaLifetimeState | null) => {
-        const nextXp = (cur?.xp ?? 0) + xp;
-        return { xp: nextXp, level: levelOf(nextXp), updatedAt: Date.now() };
-      });
-    const lifetime = lifetimeTxn.snapshot.val() as ArenaLifetimeState;
-    const prevLevel = levelOf(lifetime.xp - xp);
-    const leveledUp = lifetime.level > prevLevel;
-
-    if (plan.writePeriods) {
-      const scoreUpdate = (cur: ArenaScoreEntry | null) => ({
-        score: (cur?.score ?? 0) + xp,
-        updatedAt: Date.now(),
-        prevRank: cur?.prevRank,
-        lastRank: cur?.lastRank,
-      });
-      if (plan.writeLifetime) {
-        await db.ref(`arenaScores/lifetime/${uid}`).transaction((cur: ArenaScoreEntry | null) => ({
-          score: lifetime.xp,
-          updatedAt: Date.now(),
-          prevRank: cur?.lastRank ?? cur?.prevRank,
-          lastRank: undefined as unknown as number,
-        }));
+    // Stage A — the daily cap + workout quota, atomically (spec §7).
+    if (event.dailyApplied !== true) {
+      let capReason = 'Daily cap reached.';
+      const dailyTxn = await db
+        .ref(`arenaState/${uid}/days/${event.dayKey}`)
+        .transaction(
+          (cur: ArenaDayCounter | null) => {
+            const d = decideDailyAward(cur, { xp: event.xp, isWorkoutType }, ARENA_XP_CONFIG);
+            if (!d.ok) {
+              capReason = d.reason;
+              return undefined; // abort — no partial counter write
+            }
+            return d.next;
+          },
+          undefined,
+          false,
+        );
+      if (dailyTxn.committed !== true) {
+        await eventRef.update({ status: 'cap_limited', error: null, appliedAt: Date.now() });
+        return { status: 'daily_cap', reason: capReason, xpAwarded: 0 };
       }
-      await db.ref(`arenaScores/weekly/${weekKey}/${uid}`).transaction(scoreUpdate);
-      await db.ref(`arenaScores/season/${seasonKey}/${uid}`).transaction(scoreUpdate);
-
-      // Rank snapshots for the delta display (bounded reads; best-effort).
-      const [weekRank, lifeRank] = await Promise.all([
-        computeRankInPath(`arenaScores/weekly/${weekKey}`, (await db.ref(`arenaScores/weekly/${weekKey}/${uid}/score`).get()).val() ?? 0, uid),
-        plan.writeLifetime
-          ? computeRankInPath('arenaScores/lifetime', lifetime.xp, uid)
-          : Promise.resolve(0),
-      ]);
-      const metaUpdate: Record<string, unknown> = {
-        [`arenaScores/weekly/${weekKey}/${uid}/prevRank`]: (await db.ref(`arenaScores/weekly/${weekKey}/${uid}/lastRank`).get()).val() ?? null,
-        [`arenaScores/weekly/${weekKey}/${uid}/lastRank`]: weekRank,
-      };
-      if (plan.writeLifetime && lifeRank > 0) {
-        metaUpdate[`arenaScores/lifetime/${uid}/prevRank`] =
-          (await db.ref(`arenaScores/lifetime/${uid}/lastRank`).get()).val() ?? null;
-        metaUpdate[`arenaScores/lifetime/${uid}/lastRank`] = lifeRank;
-      }
-      await db.ref().update(metaUpdate);
+      await eventRef.update({ dailyApplied: true });
     }
 
-    return { status: 'awarded', xpAwarded: xp, lifetime: { xp: lifetime.xp, level: lifetime.level, leveledUp } };
+    // Stage B — private lifetime balance (never client-writable).
+    let lifetime: ArenaLifetimeState;
+    if (event.lifetimeApplied !== true) {
+      const lifetimeTxn = await db
+        .ref(`arenaState/${uid}/lifetime`)
+        .transaction((cur: ArenaLifetimeState | null) => {
+          const nextXp = (cur?.xp ?? 0) + event.xp;
+          return { xp: nextXp, level: levelOf(nextXp), updatedAt: Date.now() };
+        });
+      lifetime = lifetimeTxn.snapshot.val() as ArenaLifetimeState;
+      await eventRef.update({ lifetimeApplied: true });
+    } else {
+      lifetime = ((await db.ref(`arenaState/${uid}/lifetime`).get()).val() as ArenaLifetimeState | null) ?? {
+        xp: 0,
+        level: 0,
+        updatedAt: Date.now(),
+      };
+    }
+    const prevLevel = levelOf(lifetime.xp - event.xp);
+    const leveledUp = event.lifetimeApplied !== true && lifetime.level > prevLevel;
+
+    // Stage C — public projections per CURRENT consent (additive → stage-flagged).
+    const plan = projectionPlan(true, profile.visibility);
+    if (event.periodsApplied !== true) {
+      if (plan.writePeriods) {
+        const scoreUpdate = (cur: ArenaScoreEntry | null) => ({
+          score: (cur?.score ?? 0) + event.xp,
+          updatedAt: Date.now(),
+          prevRank: cur?.prevRank,
+          lastRank: cur?.lastRank,
+        });
+        if (plan.writeLifetime) {
+          // absolute write (idempotent by construction)
+          await db.ref(`arenaScores/lifetime/${uid}`).transaction((cur: ArenaScoreEntry | null) => ({
+            score: lifetime.xp,
+            updatedAt: Date.now(),
+            prevRank: cur?.lastRank ?? cur?.prevRank,
+            lastRank: undefined as unknown as number,
+          }));
+        }
+        const weekKeyOfEvent = event.weekKey;
+        const seasonKeyOfEvent = event.seasonKey;
+        await db.ref(`arenaScores/weekly/${weekKeyOfEvent}/${uid}`).transaction(scoreUpdate);
+        await db.ref(`arenaScores/season/${seasonKeyOfEvent}/${uid}`).transaction(scoreUpdate);
+
+        // Rank snapshots for the delta display (bounded reads; best-effort).
+        const [weekRank, lifeRank] = await Promise.all([
+          computeRankInPath(`arenaScores/weekly/${weekKeyOfEvent}`, (await db.ref(`arenaScores/weekly/${weekKeyOfEvent}/${uid}/score`).get()).val() ?? 0, uid),
+          plan.writeLifetime
+            ? computeRankInPath('arenaScores/lifetime', lifetime.xp, uid)
+            : Promise.resolve(0),
+        ]);
+        const metaUpdate: Record<string, unknown> = {
+          [`arenaScores/weekly/${weekKeyOfEvent}/${uid}/prevRank`]: (await db.ref(`arenaScores/weekly/${weekKeyOfEvent}/${uid}/lastRank`).get()).val() ?? null,
+          [`arenaScores/weekly/${weekKeyOfEvent}/${uid}/lastRank`]: weekRank,
+        };
+        if (plan.writeLifetime && lifeRank > 0) {
+          metaUpdate[`arenaScores/lifetime/${uid}/prevRank`] =
+            (await db.ref(`arenaScores/lifetime/${uid}/lastRank`).get()).val() ?? null;
+          metaUpdate[`arenaScores/lifetime/${uid}/lastRank`] = lifeRank;
+        }
+        await db.ref().update(metaUpdate);
+      }
+      await eventRef.update({ periodsApplied: true });
+    }
+
+    // Every stage durably done — only now can success be truthfully reported.
+    await eventRef.update({ status: 'applied', appliedAt: Date.now(), error: null });
+    return { status: 'awarded', xpAwarded: event.xp, lifetime: { xp: lifetime.xp, level: lifetime.level, leveledUp } };
   } catch (err) {
-    console.error('[arena] aggregate update failed after event commit:', err instanceof Error ? err.message : 'unknown');
-    return { status: 'awarded', xpAwarded: xp };
+    await eventRef
+      .update({ status: 'failed', error: err instanceof Error ? err.message.slice(0, 200) : 'unknown' })
+      .catch(() => undefined);
+    return { status: 'failed', reason: 'Reward processing failed — safely retry the same claim.', xpAwarded: 0 };
   }
 }
 
