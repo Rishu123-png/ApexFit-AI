@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { ARENA_XP_CONFIG, applyDailyCap, arenaEventId, checkEligibility, fbSafeKey } from '../xp';
 
-const goodWorkout = { durationSec: 1500, status: 'completed' as const, planId: 'foundations-full-body' };
-const mobility = { durationSec: 1200, status: 'completed' as const, planId: 'core-mobility' };
+// Sessions only earn XP when server-verified (sealed via /api/workouts/seal).
+const goodWorkout = { durationSec: 1500, status: 'completed' as const, planId: 'foundations-full-body', verified: true };
+const mobility = { durationSec: 1200, status: 'completed' as const, planId: 'core-mobility', verified: true };
 
 describe('XP config sanity', () => {
   it('proposed reward values are in place', () => {
@@ -33,6 +34,23 @@ describe('workout_completed eligibility', () => {
   });
   it('routes mobility plans away from the workout reward (no double-dip)', () => {
     const r = checkEligibility('workout_completed', { session: mobility, workoutAwardsToday: 0 });
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects unverified (self-reported) sessions — forged completion earns no XP', () => {
+    const r = checkEligibility('workout_completed', {
+      session: { durationSec: 1500, status: 'completed' as const, planId: 'foundations-full-body' },
+      workoutAwardsToday: 0,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toMatch(/not server-verified/i);
+  });
+
+  it('rejects explicitly unverified sessions even with complete data', () => {
+    const r = checkEligibility('workout_completed', {
+      session: { ...goodWorkout, verified: false },
+      workoutAwardsToday: 0,
+    });
     expect(r.ok).toBe(false);
   });
 });
