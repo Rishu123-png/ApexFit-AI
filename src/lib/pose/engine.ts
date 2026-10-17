@@ -93,16 +93,24 @@ class MediaPipePoseEngine implements PoseEngine {
         'Couldn’t download the pose runtime (check network/ad-blockers).',
       );
     }
-    try {
-      this.landmarker = await mod.PoseLandmarker.createFromOptions(vision, {
-        baseOptions: { modelAssetPath: MODEL_URL, delegate: 'GPU' },
-        runningMode: 'VIDEO',
-        numPoses: 1,
-      });
-    } catch {
-      throw new PoseEngineNotInstalledError(
-        'The pose model could not be loaded on this device (GPU/WebGL missing?).',
-      );
+    // Prefer the GPU delegate; phones without compatible WebGL fall back to
+    // CPU instead of failing outright (slower but accurate and honest).
+    for (const delegate of ['GPU', 'CPU'] as const) {
+      try {
+        this.landmarker = await mod.PoseLandmarker.createFromOptions(vision, {
+          baseOptions: { modelAssetPath: MODEL_URL, delegate },
+          runningMode: 'VIDEO',
+          numPoses: 1,
+        });
+        return;
+      } catch (err) {
+        if (delegate === 'CPU') {
+          const why = err instanceof Error ? ` (${err.message})` : '';
+          throw new PoseEngineNotInstalledError(
+            `The pose model could not be loaded on this device${why}.`,
+          );
+        }
+      }
     }
   }
 
