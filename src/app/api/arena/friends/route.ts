@@ -9,7 +9,7 @@ import {
   unblockUser,
   getFriendsOverview,
 } from '@/lib/arena/server';
-import { rateLimit } from '@/lib/ai/ratelimit';
+import { checkRateLimit } from '@/lib/ai/ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +22,7 @@ export async function GET(req: NextRequest) {
   const auth = await requireArenaUser(req);
   if (isErrorResponse(auth)) return auth;
 
-  const rl = rateLimit(`arena-friends-read:${auth.uid}`, 120, 60 * 60 * 1000);
+  const rl = await checkRateLimit(`arena-friends-read:${auth.uid}`, 120, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
 
   const overview = await getFriendsOverview(auth.uid);
@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   if (isErrorResponse(auth)) return auth;
   const { uid } = auth;
 
-  const rl = rateLimit(`arena-friends:${uid}`, 40, 60 * 60 * 1000);
+  const rl = await checkRateLimit(`arena-friends:${uid}`, 40, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
 
   let body: Record<string, unknown>;
