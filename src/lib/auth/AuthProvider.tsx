@@ -11,6 +11,7 @@ import {
 } from 'react';
 import {
   onAuthStateChanged,
+  sendEmailVerification,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
   sendPasswordResetEmail,
@@ -109,6 +110,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const auth = requireAuth();
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(cred.user, { displayName: name });
+      // Email verification: Firebase confirms ownership via a LINK sent to the
+      // address (Firebase Auth has no email-OTP flow; phone OTP would be a
+      // separate provider). Never block signup on the send itself.
+      try {
+        await sendEmailVerification(cred.user);
+      } catch {
+        /* best-effort — user can resend later */
+      }
       // Only create the database profile after Firebase confirms the account.
       await createProfile(cred.user.uid, {
         displayName: name,
