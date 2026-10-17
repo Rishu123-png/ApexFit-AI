@@ -1,10 +1,13 @@
+
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
-import { subscribeRecentWorkouts, subscribeWeekWorkouts } from '@/lib/db';
+import { subscribeRecentWorkouts, subscribeWeekWorkouts, subscribeCheckins, saveCheckin, type RecoveryCheckinRecord } from '@/lib/db';
 import { recommendToday } from '@/lib/core/adaptive';
+import { computeReadiness } from '@/lib/core/readiness';
+import { suggestNextForExercise, buildExerciseTrends } from '@/lib/core/progression';
 import { dateKey, last7DayLabels, daysAgoTs, formatDuration } from '@/lib/dates';
 import { MiniBars } from '@/components/charts';
 import { GlassCard, Badge, Button, Alert } from '@/components/ui';
@@ -44,6 +47,9 @@ export default function InsightsPage() {
   const uid = user?.uid;
   const [week, setWeek] = useState<WorkoutSession[]>([]);
   const [recent, setRecent] = useState<WorkoutSession[]>([]);
+  const [checkins, setCheckins] = useState<Record<string, RecoveryCheckinRecord>>({});
+  const [checkinDraft, setCheckinDraft] = useState<{ sleep: string; energy: string; soreness: string }>({ sleep: '', energy: '', soreness: '' });
+  const [checkinState, setCheckinState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [copied, setCopied] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -54,9 +60,11 @@ export default function InsightsPage() {
       setRecent(s);
       setLoaded(true);
     });
+    const u3 = subscribeCheckins(uid, 14, setCheckins);
     return () => {
       u1();
       u2();
+      u3();
     };
   }, [uid]);
 
@@ -105,12 +113,71 @@ export default function InsightsPage() {
     return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4);
   }, [month]);
 
+  // ── Readiness (§19): training load + streak + today's optional check-in ──
+  const readiness = useMemo(() => {
+    const days = last7DayLabels();
+    const mins = new Map<string, number>(days.map((d) => [d.key, 0]));
+    for (const s of week) {
+      const k = dateKey(new Date(s.startedAt));
+      mins.set(k, (mins.get(k) ?? 0) + (s.durationSec ?? 0) / 60);
+    }
+    const todayC = checkins[dateKey()];
+    return computeReadiness({
+      minutes7d: days.map((d) => mins.get(d.key) ?? 0),
+      streakDays: stats.streak,
+      checkin: todayC
+        ? { sleepHrs: todayC.sleepHrs, energy: todayC.energy, soreness: todayC.soreness }
+        : null,
+    });
+  }, [week, checkins, stats.streak]);
+
+  // ── Progression (§20): exercise-level trends, only with enough history ──
+  const progression = useMemo(() => {
+    const points = buildExerciseTrends(
+      recent.slice(0, 40).map((s) => ({
+        dayKey: dateKey(new Date(s.startedAt)),
+        exercises: s.exercises ?? [],
+      })),
+    );
+    const out: { name: string; suggestion: NonNullable<ReturnType<typeof suggestNextForExercise>> }[] = [];
+    for (const [exerciseId, pts] of points) {
+      const suggestion = suggestNextForExercise(exerciseId, pts);
+      if (suggestion) out.push({ name: exerciseId, suggestion });
+    }
+    return out
+      .sort((a, b) => Math.abs(b.suggestion.deltaSets) - Math.abs(a.suggestion.deltaSets))
+      .slice(0, 4);
+  }, [recent]);
+
+  async function submitCheckin() {
+    if (!uid) return;
+    const payload: { sleepHrs?: number; energy?: number; soreness?: number } = {};
+    const sleep = Number(checkinDraft.sleep);
+    const energy = Number(checkinDraft.energy);
+    const soreness = Number(checkinDraft.soreness);
+    if (checkinDraft.sleep !== '' && Number.isFinite(sleep) && sleep >= 0 && sleep <= 24) payload.sleepHrs = Math.min(24, Math.max(0, sleep));
+    if (checkinDraft.energy !== '' && energy >= 1 && energy <= 5) payload.energy = energy;
+    if (checkinDraft.soreness !== '' && soreness >= 1 && soreness <= 5) payload.soreness = soreness;
+    if (Object.keys(payload).length === 0) {
+      setCheckinState('error');
+      return;
+    }
+    setCheckinState('saving');
+    try {
+      await saveCheckin(uid, dateKey(), payload);
+      setCheckinState('saved');
+      setTimeout(() => setCheckinState('idle'), 2500);
+    } catch {
+      setCheckinState('error');
+    }
+  }
+
   const shareText = useMemo(() => {
     const w = formatDuration(week.reduce((a, s) => a + (s.durationSec ?? 0), 0));
     return [
       '⚡ ApexFit weekly report',
       `Sessions: ${weekCount} · Time: ${w} · Streak: ${stats.streak} day${stats.streak === 1 ? '' : 's'}`,
-      stats.verified > 0 ? `Server-verified sessions: ${stats.verified}/${stats.totalSessions}` : '',
+      stats.verified > 0 ? `Server-checked sessions: ${stats.verified}/${stats.totalSessions} (plausibility only, not proof)` : '',
       'Track with ApexFit AI 🏆',
     ]
       .filter(Boolean)
@@ -135,7 +202,7 @@ export default function InsightsPage() {
             <IconTrendingUp className="text-neon" width={26} /> Apex <span className="neon-text">Insights</span>
           </h1>
           <p className="mt-1 text-sm text-slate-400">
-            Summaries, personal records and trends — computed on-device from your real, server-verified history.
+            Summaries, personal records and trends — computed on-device from your real history — server-checked sessions are plausibility-screened, not fraud-proof.
           </p>
         </div>
         <Button variant="outline" className="px-3 py-1.5 text-xs" onClick={copyShare} disabled={weekCount === 0}>
@@ -158,6 +225,85 @@ export default function InsightsPage() {
           )}
         </div>
       </GlassCard>
+
+      {/* Apex Readiness — estimate §19 */}
+      <GlassCard>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex h-20 w-20 flex-col items-center justify-center rounded-full border-2 border-electric-500/50 bg-electric-500/10" role="img" aria-label={`Readiness ${readiness.score} out of 100 (${readiness.band})`}>
+            <span className="text-2xl font-extrabold tabular-nums text-neon">{readiness.score}</span>
+            <span className="text-[9px] uppercase tracking-widest text-slate-400">readiness</span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={readiness.band === 'high' ? 'green' : readiness.band === 'moderate' ? 'blue' : 'amber'}>
+                {readiness.band} readiness
+              </Badge>
+              <Badge tone="slate">{readiness.recommendation === 'rest' ? 'rest today' : readiness.recommendation === 'light' ? 'go light' : 'normal session ok'}</Badge>
+              <span className="text-[11px] text-slate-500">estimate, not a measurement</span>
+            </div>
+            <p className="mt-1.5 text-sm text-slate-300">{readiness.summary}</p>
+            <ul className="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2">
+              {readiness.factors.map((f) => (
+                <li key={f.key} className="flex gap-1.5">
+                  <span className={f.present ? 'text-mint' : 'text-slate-600'} aria-hidden="true">●</span>
+                  <span>
+                    <b className="text-slate-300">{f.label}:</b> {f.detail}
+                    {!f.present && ' (missing)'}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        {/* Optional daily check-in feeds the missing factors */}
+        {readiness.missingSubjectiveInputs > 0 && (
+          <div className="mt-3 rounded-xl border border-white/10 bg-white/[0.02] p-3">
+            <p className="mb-2 text-xs font-semibold text-slate-300">30-second check-in (private, optional):</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="text-xs text-slate-400">
+                Sleep (h)
+                <input className="input ml-1.5 w-16 py-1 text-xs" inputMode="decimal" placeholder="7.5" value={checkinDraft.sleep} onChange={(e) => setCheckinDraft((d) => ({ ...d, sleep: e.target.value }))} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Energy (1–5)
+                <input className="input ml-1.5 w-14 py-1 text-xs" inputMode="numeric" placeholder="4" value={checkinDraft.energy} onChange={(e) => setCheckinDraft((d) => ({ ...d, energy: e.target.value }))} />
+              </label>
+              <label className="text-xs text-slate-400">
+                Soreness (1–5)
+                <input className="input ml-1.5 w-14 py-1 text-xs" inputMode="numeric" placeholder="2" value={checkinDraft.soreness} onChange={(e) => setCheckinDraft((d) => ({ ...d, soreness: e.target.value }))} />
+              </label>
+              <Button className="px-3 py-1.5 text-xs" onClick={submitCheckin} loading={checkinState === 'saving'}>
+                {checkinState === 'saved' ? 'Saved ✓' : 'Save check-in'}
+              </Button>
+              {checkinState === 'error' && <span className="text-xs text-coral">Check values (0–24 h; 1–5 scale).</span>}
+            </div>
+          </div>
+        )}
+      </GlassCard>
+
+      {/* Progression (§20) */}
+      {progression.length > 0 && (
+        <GlassCard>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-bold uppercase tracking-[0.15em] text-slate-400">Next-session suggestions</h2>
+            <Badge tone="slate">derived from history</Badge>
+          </div>
+          <ul className="space-y-2">
+            {progression.map(({ name, suggestion }) => (
+              <li key={name} className="flex flex-wrap items-center gap-2.5 rounded-xl border border-white/5 bg-white/[0.02] px-3.5 py-2.5 text-sm">
+                <span className="min-w-0 flex-1 truncate font-semibold capitalize">{name.replace(/-/g, ' ')}</span>
+                <Badge tone={suggestion.deltaSets > 0 ? 'green' : suggestion.deltaSets < 0 ? 'amber' : 'slate'}>
+                  {suggestion.deltaSets > 0 ? `+1 set` : suggestion.deltaSets < 0 ? `−1 set (easier)` : 'hold'}
+                </Badge>
+                <span className="w-full text-xs text-slate-400">
+                  {suggestion.nextTargetSets} sets next · {suggestion.rationale}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </GlassCard>
+      )}
 
       {!loaded ? (
         <GlassCard><p className="py-8 text-center text-sm text-slate-400">Loading your training history…</p></GlassCard>
@@ -215,7 +361,7 @@ export default function InsightsPage() {
                   <span className="max-w-[55%] truncate text-right font-semibold">{stats.favPlan}</span>
                 </li>
                 <li className="flex items-center justify-between rounded-xl border border-white/5 bg-white/[0.02] px-3.5 py-2.5">
-                  <span className="text-slate-300">Server-verified sessions</span>
+                  <span className="text-slate-300">Server-checked sessions</span>
                   <Badge tone={stats.verified === stats.totalSessions ? 'green' : 'amber'}>
                     {stats.verified}/{stats.totalSessions}
                   </Badge>
@@ -223,7 +369,7 @@ export default function InsightsPage() {
               </ul>
               <p className="mt-3 flex items-start gap-1.5 text-xs text-slate-500">
                 <IconInfo width={13} className="mt-0.5 shrink-0" />
-                Verified sessions pass a server plausibility check and are the only ones that earn XP.
+                Server-checked sessions pass a plausibility screen (not proof of exercise) and are the only ones that earn XP.
               </p>
             </GlassCard>
 
@@ -253,7 +399,7 @@ export default function InsightsPage() {
             </GlassCard>
           </div>
 
-          {/* Weekly share card */}
+           {/* Weekly share card */}
           <GlassCard className="border border-neon/20 bg-gradient-to-br from-electric-600/10 to-neon/5">
             <h2 className="mb-2 text-sm font-bold uppercase tracking-[0.15em] text-electric-300">Weekly card</h2>
             <pre className="whitespace-pre-wrap font-sans text-sm text-slate-200">{shareText}</pre>
@@ -265,7 +411,7 @@ export default function InsightsPage() {
 
           {stats.verified < stats.totalSessions && (
             <Alert kind="info">
-              Some sessions are self-reported (not server-verified) — they remain in your private history and trends,
+              Some sessions are self-reported (no server plausibility check) — they remain in your private history and trends,
               but only verified sessions count towards Arena XP and missions.
             </Alert>
           )}
