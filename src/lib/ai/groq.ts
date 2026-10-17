@@ -1,21 +1,37 @@
 import 'server-only';
 
 /**
- * Groq chat completions — server-side only.
+ * Groq service — server-side only, unified for chat + vision.
  *
- * Keys are read exclusively from server env vars (GROQ_API_KEY_PRIMARY /
- * GROQ_API_KEY_SECONDARY) and are never sent to the browser. If the primary
- * key fails with a retryable error (auth, rate-limit, server or network), the
- * request is retried once with the secondary key.
+ * Guarantees:
+ *  - keys read ONLY from server env (never sent to the browser)
+ *  - primary key tried first; secondary used ONLY for retryable failures
+ *    (auth 401/403, rate-limit 429, upstream 5xx, network/timeout) — a 400
+ *    program error is never retried against the fallback key
+ *  - model output is validated and normalized before use
+ *  - nothing about keys appears in logs or error responses
  */
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
-const MODEL = process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile';
+const TEXT_MODEL = process.env.GROQ_MODEL ?? 'llama-3.3-70b-versatile';
+const VISION_MODEL = process.env.GROQ_VISION_MODEL ?? 'meta-llama/llama-4-scout-17b-16e-instruct';
 const TIMEOUT_MS = 15_000;
+const MAX_OUTPUT_CHARS = 6000;
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
   content: string;
+}
+
+interface VisionContentPart {
+  type: 'text' | 'image_url';
+  text?: string;
+  image_url?: { url: string };
+}
+
+interface VisionMessage {
+  role: 'user' | 'system';
+  content: VisionContentPart[];
 }
 
 export class GroqNotConfiguredError extends Error {
@@ -34,48 +50,71 @@ export class GroqRequestError extends Error {
   }
 }
 
-async function callOnce(apiKey: string, messages: ChatMessage[]): Promise<string> {
+/** Retryable: auth failure, rate limit, upstream 5xx, network/timeout (no status). */
+export function isRetryable(err: unknown): boolean {
+  if (err instanceof GroqRequestError) {
+    if (!err.status) return true;
+    return err.status === 401 || err.status === 403 || err.status === 429 || err.status >= 500;
+  }
+  return true; // timeouts / network errors
+}
+
+/** Validate + normalize raw model output before it is used anywhere. */
+export function normalizeModelOutput(content: unknown): string {
+  if (typeof content !== 'string') throw new GroqRequestError('Groq returned a non-text payload');
+  // strip control chars (keep \n\t), trim, clamp to a sane length
+  const cleaned = content.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
+  if (cleaned.length === 0) throw new GroqRequestError('Groq returned an empty payload');
+  return cleaned.slice(0, MAX_OUTPUT_CHARS);
+}
+
+async function callOnce(
+  apiKey: string,
+  body: Record<string, unknown>,
+): Promise<string> {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      model: MODEL,
-      messages,
-      temperature: 0.6,
-      max_tokens: 700,
-    }),
+    body: JSON.stringify(body),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
 
   if (!res.ok) {
-    // Deliberately discard the body — upstream error text can contain request
-    // metadata; we log only the status code.
+    // Deliberately discard upstream body — it can echo request metadata.
     throw new GroqRequestError('Groq request failed', res.status);
   }
 
   const data: unknown = await res.json();
   const content =
     typeof data === 'object' && data !== null
-      ? (data as { choices?: { message?: { content?: unknown } }[] }).choices?.[0]?.message
-          ?.content
+      ? (data as { choices?: { message?: { content?: unknown } }[] }).choices?.[0]?.message?.content
       : undefined;
-
-  if (typeof content !== 'string' || content.length === 0) {
-    throw new GroqRequestError('Groq returned an unexpected payload');
-  }
-  return content.trim();
+  return normalizeModelOutput(content);
 }
 
-/** Retryable: auth failure, rate limit, upstream 5xx, or network/timeout (no status). */
-function isRetryable(err: unknown): boolean {
-  if (err instanceof GroqRequestError) {
-    if (!err.status) return true;
-    return err.status === 401 || err.status === 403 || err.status === 429 || err.status >= 500;
+/** Run a request against primary, falling back to secondary on retryable errors only. */
+async function withKeyFailover(body: Record<string, unknown>): Promise<{ content: string; usedFallbackKey: boolean }> {
+  const primary = process.env.GROQ_API_KEY_PRIMARY;
+  const secondary = process.env.GROQ_API_KEY_SECONDARY;
+  if (!primary && !secondary) throw new GroqNotConfiguredError();
+
+  if (primary) {
+    try {
+      return { content: await callOnce(primary, body), usedFallbackKey: false };
+    } catch (err) {
+      if (!isRetryable(err) || !secondary) throw err;
+      // Log failure mode only — never keys, request bodies or user content.
+      console.warn(
+        '[groq] primary key failed:',
+        err instanceof GroqRequestError ? `HTTP ${err.status ?? 'network/timeout'}` : 'unexpected error',
+        '— retrying with secondary key',
+      );
+    }
   }
-  return true; // timeouts / network errors
+  return { content: await callOnce(secondary as string, body), usedFallbackKey: true };
 }
 
 export interface GroqResult {
@@ -84,27 +123,38 @@ export interface GroqResult {
   usedFallbackKey: boolean;
 }
 
-export async function groqChat(messages: ChatMessage[]): Promise<GroqResult> {
-  const primary = process.env.GROQ_API_KEY_PRIMARY;
-  const secondary = process.env.GROQ_API_KEY_SECONDARY;
+export async function groqChat(messages: ChatMessage[], opts: { model?: string } = {}): Promise<GroqResult> {
+  const model = opts.model ?? TEXT_MODEL;
+  const { content, usedFallbackKey } = await withKeyFailover({
+    model,
+    messages,
+    temperature: 0.6,
+    max_tokens: 700,
+  });
+  return { content, model, usedFallbackKey };
+}
 
-  if (!primary && !secondary) throw new GroqNotConfiguredError();
-
-  if (primary) {
-    try {
-      const content = await callOnce(primary, messages);
-      return { content, model: MODEL, usedFallbackKey: false };
-    } catch (err) {
-      if (!isRetryable(err) || !secondary) throw err;
-      // Log failure mode only — never the key, request body or user content.
-      console.warn(
-        '[groq] primary key failed:',
-        err instanceof GroqRequestError ? `HTTP ${err.status ?? 'network/timeout'}` : 'unexpected error',
-        '— retrying with secondary key',
-      );
-    }
-  }
-
-  const content = await callOnce(secondary as string, messages);
-  return { content, model: MODEL, usedFallbackKey: true };
+/** Vision: one image (data URL) + a text prompt. Returns validated raw text. */
+export async function groqVision(
+  imageDataUrl: string,
+  prompt: string,
+  opts: { model?: string; maxTokens?: number } = {},
+): Promise<GroqResult> {
+  const model = opts.model ?? VISION_MODEL;
+  const messages: VisionMessage[] = [
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: prompt },
+        { type: 'image_url', image_url: { url: imageDataUrl } },
+      ],
+    },
+  ];
+  const { content, usedFallbackKey } = await withKeyFailover({
+    model,
+    messages: messages as unknown as Record<string, unknown>[],
+    temperature: 0.2,
+    max_tokens: opts.maxTokens ?? 900,
+  });
+  return { content, model, usedFallbackKey };
 }
