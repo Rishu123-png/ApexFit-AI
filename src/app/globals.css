@@ -1,0 +1,229 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #04060e;
+  --electric: #2f8bff;
+  --neon: #22e0ff;
+  color-scheme: dark;
+}
+
+/* Custom property for the rotating conic border on glow buttons */
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+    scroll-behavior: smooth;
+  }
+  body {
+    @apply bg-ink text-slate-100 antialiased;
+    min-height: 100dvh;
+    overflow-x: hidden;
+  }
+  *:focus-visible {
+    outline: 2px solid var(--neon);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: rgba(47, 139, 255, 0.45);
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(59, 130, 246, 0.35);
+    border-radius: 8px;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply border border-white/10 bg-white/[0.055] backdrop-blur-xl;
+    box-shadow:
+      0 10px 40px rgba(2, 8, 26, 0.5),
+      inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  }
+  .glass-strong {
+    @apply border border-electric-500/20 bg-navy/60 backdrop-blur-2xl;
+    box-shadow:
+      0 20px 60px rgba(2, 8, 26, 0.6),
+      0 0 0 1px rgba(47, 139, 255, 0.06),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  }
+  .neon-text {
+    @apply bg-gradient-to-r from-electric-300 via-neon to-electric-500 bg-clip-text text-transparent;
+  }
+  .card-hover {
+    @apply transition-all duration-300 hover:-translate-y-0.5 hover:border-electric-400/40;
+  }
+  .card-hover:hover {
+    box-shadow:
+      0 16px 50px rgba(2, 8, 26, 0.6),
+      0 0 32px rgba(47, 139, 255, 0.15);
+  }
+  .input {
+    @apply w-full rounded-xl border border-white/10 bg-white/[0.045] px-4 py-3 text-sm text-slate-100 placeholder-slate-500 backdrop-blur transition-colors;
+  }
+  .input:focus {
+    @apply border-electric-400/70 bg-white/[0.07];
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(47, 139, 255, 0.18);
+  }
+  .code {
+    @apply rounded bg-white/10 px-1.5 py-0.5 font-mono text-[0.85em] text-electric-200;
+  }
+  /* Shimmer skeleton for loading placeholders */
+  .skeleton {
+    @apply animate-shimmer rounded-xl bg-white/5;
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0.04) 25%,
+      rgba(255, 255, 255, 0.1) 50%,
+      rgba(255, 255, 255, 0.04) 75%
+    );
+    background-size: 200% 100%;
+  }
+}
+
+/* ── Animated glow border (conic gradient ring) ─────────────────────────── */
+.btn-glow {
+  isolation: isolate;
+}
+.btn-glow::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(
+    from var(--angle, 0deg),
+    transparent 0deg,
+    #2f8bff 70deg,
+    #22e0ff 140deg,
+    #8b5cf6 210deg,
+    transparent 300deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  z-index: 1;
+  animation: spin-angle 3.6s linear infinite;
+}
+@keyframes spin-angle {
+  to {
+    --angle: 360deg;
+  }
+}
+
+/* ── Ambient background: aurora orbs + grid ─────────────────────────────── */
+.app-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse 80% 55% at 50% -12%, rgba(47, 139, 255, 0.16), transparent 60%),
+    var(--bg);
+}
+.app-aurora::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(59, 130, 246, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(59, 130, 246, 0.05) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 100% 70% at 50% 0%, black 30%, transparent 75%);
+}
+.orb {
+  position: absolute;
+  border-radius: 9999px;
+  filter: blur(90px);
+  pointer-events: none;
+}
+.orb-a {
+  width: 34rem;
+  height: 34rem;
+  top: -14rem;
+  left: -10rem;
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.32), transparent 65%);
+  animation: drift-a 26s ease-in-out infinite alternate;
+}
+.orb-b {
+  width: 30rem;
+  height: 30rem;
+  bottom: -16rem;
+  right: -8rem;
+  background: radial-gradient(circle, rgba(34, 224, 255, 0.16), transparent 65%);
+  animation: drift-b 30s ease-in-out infinite alternate;
+}
+.orb-c {
+  width: 22rem;
+  height: 22rem;
+  top: 38%;
+  left: 55%;
+  background: radial-gradient(circle, rgba(139, 92, 246, 0.14), transparent 65%);
+  animation: drift-a 34s ease-in-out infinite alternate-reverse;
+}
+@keyframes drift-a {
+  to {
+    transform: translate(5rem, 3.5rem) scale(1.08);
+  }
+}
+@keyframes drift-b {
+  to {
+    transform: translate(-4rem, -3rem) scale(1.12);
+  }
+}
+
+/* Panel entrance animation used on auth cards */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.rise-in {
+  animation: rise-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+.pulse-soft {
+  animation: pulse-soft 2.4s ease-in-out infinite;
+}
+
+/* Respect reduced-motion preferences — kill decorative animation */
+@media (prefers-reduced-motion: reduce) {
+  .orb,
+  .btn-glow::before,
+  .rise-in,
+  .pulse-soft,
+  .animate-floaty,
+  .animate-shimmer {
+    animation: none !important;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+}
