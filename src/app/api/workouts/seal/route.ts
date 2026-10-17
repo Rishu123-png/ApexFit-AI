@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireArenaUser, isErrorResponse } from '@/lib/arena/http';
 import { getAdminDb } from '@/lib/firebase/admin';
 import { validateSessionSeal, deriveSessionStatus } from '@/lib/workouts/seal';
-import { rateLimit } from '@/lib/ai/ratelimit';
+import { checkRateLimit } from '@/lib/ai/ratelimit';
 import type { WorkoutSession } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic';
 /**
  * POST /api/workouts/seal — { sessionId }
  *
- * Turns a client-written, self-reported workout into a server-verified one by
+ !* Stamps a client-written, self-reported workout with a server PLAUSIBILITY check.
  * stamping `verified: true`, `serverDurationSec` and `sealedAt` after
  * plausibility checks against the server clock. Idempotent: sealing twice
  * returns the existing verification. Clients cannot forge these fields
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   if (isErrorResponse(auth)) return auth;
   const { uid } = auth;
 
-  const rl = rateLimit(`workout-seal:${uid}`, 40, 60 * 60 * 1000);
+  const rl = await checkRateLimit(`workout-seal:${uid}`, 40, 60 * 60 * 1000);
   if (!rl.ok) return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
 
   let body: Record<string, unknown>;
