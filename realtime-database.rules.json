@@ -65,6 +65,9 @@
             "durationSec": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 21600" },
             "totalSets": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500" },
             "status": { ".validate": "newData.val() === 'completed' || newData.val() === 'partial'" },
+            "verified": { ".validate": "!newData.exists() || newData.val() === false" },
+            "sealedAt": { ".validate": "!newData.exists()" },
+            "serverDurationSec": { ".validate": "!newData.exists()" },
             "exercises": {
               "$exIdx": {
                 ".validate": "newData.hasChildren(['name', 'targetSets', 'completedSets'])",
