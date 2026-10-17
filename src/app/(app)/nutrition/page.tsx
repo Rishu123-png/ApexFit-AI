@@ -16,6 +16,7 @@ import {
 } from '@/lib/db';
 import { dateKey } from '@/lib/dates';
 import { claimArena } from '@/lib/arena/client';
+import { safeCalorieTarget, safeProteinTarget, safeWaterTarget } from '@/lib/health/targets';
 import {
   DEFAULT_PREFERENCES,
   type DietaryPreference,
@@ -148,7 +149,7 @@ function NutritionInner() {
         protein: nums[1],
         carbs: nums[2],
         fat: nums[3],
-        source: 'estimate',
+        source: 'custom',
         loggedAt: Date.now(),
       };
     } else {
@@ -221,18 +222,20 @@ function NutritionInner() {
 
   async function savePrefs() {
     if (!prefForm) return;
-    const cal = Number(prefForm.cal);
-    const protein = Number(prefForm.protein);
-    const water = Number(prefForm.water);
-    if (!(cal >= 800 && cal <= 8000) || !(protein >= 20 && protein <= 400) || !(water >= 500 && water <= 8000)) {
-      setPrefDraft('Values out of range — calories 800–8000, protein 20–400 g, water 500–8000 ml.');
-      return;
-    }
+    // Health-safe policy (§14): dangerous targets are REJECTED with guidance,
+    // never silently clamped into something the user didn't intend.
+    const cal = safeCalorieTarget(Number(prefForm.cal));
+    if (!cal.ok) return setPrefDraft(cal.reason!);
+    const protein = safeProteinTarget(Number(prefForm.protein));
+    if (!protein.ok) return setPrefDraft(protein.reason!);
+    const water = safeWaterTarget(Number(prefForm.water));
+    if (!water.ok) return setPrefDraft(water.reason!);
+
     setPrefDraft('');
     await savePreferences(uid, {
-      calorieTarget: cal,
-      proteinTarget: protein,
-      waterTargetMl: water,
+      calorieTarget: cal.value!,
+      proteinTarget: protein.value!,
+      waterTargetMl: water.value!,
       dietaryPreference: prefForm.diet,
     });
     setPrefSaved(true);
@@ -244,7 +247,7 @@ function NutritionInner() {
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">Nutrition <span className="neon-text">tracker</span></h1>
-          <p className="mt-1 text-sm text-slate-400">Log meals against your daily targets. Verified vs estimated values are always labelled.</p>
+          <p className="mt-1 text-sm text-slate-400">Log meals against your daily targets. Food-DB, custom and AI-estimated values are always labelled — estimates stay editable.</p>
         </div>
         <Button glow onClick={() => (formOpen ? closeForm() : openForm())}>
           {formOpen ? <><IconX width={15} /> Close</> : <><IconPlus width={15} /> Add food</>}
@@ -343,7 +346,7 @@ function NutritionInner() {
                           </span>
                           <span className="flex items-center gap-2 text-xs text-slate-400">
                             {f.calories} kcal
-                            {f.source === 'verified' ? <Badge tone="green"><IconShield width={10} /> verified</Badge> : <Badge tone="amber"><IconInfo width={10} /> est.</Badge>}
+                            {f.source === 'reference' ? <Badge tone="green"><IconShield width={10} /> food DB</Badge> : <Badge tone="amber"><IconInfo width={10} /> est.</Badge>}
                           </span>
                         </button>
                       ))}
@@ -415,7 +418,7 @@ function NutritionInner() {
                         </p>
                       </div>
                       <div className="flex items-center gap-1.5">
-                        {e.source === 'verified' ? <Badge tone="green">verified</Badge> : <Badge tone="amber">estimate</Badge>}
+                        {e.source === 'reference' ? <Badge tone="green">food DB</Badge> : e.source === 'custom' ? <Badge tone="slate">custom</Badge> : <Badge tone="amber">estimate</Badge>}
                         <button onClick={() => openForm(e)} className="rounded-lg p-1.5 text-slate-400 transition hover:bg-white/10 hover:text-electric-300" aria-label={`Edit ${e.name}`}>
                           <IconEdit width={15} />
                         </button>
@@ -432,7 +435,7 @@ function NutritionInner() {
         </div>
       )}
 
-      {/* Preferences */}
+     {/* Preferences */}
       {prefForm && (
         <GlassCard>
           <SectionTitle title="Daily targets & preferences" />
