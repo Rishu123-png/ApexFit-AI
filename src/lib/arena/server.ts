@@ -12,8 +12,9 @@ import { randomBytes } from 'crypto';
 import { getAdminDb } from '@/lib/firebase/admin';
 import { ARENA_XP_CONFIG, applyDailyCap, arenaEventId, checkEligibility, fbSafeKey, type NutritionDayLike, type SessionLike } from './xp';
 import { levelOf } from './levels';
-import { dayKeyInTz, weekKeyInTz, seasonKeyInTz, weekStartMsInTz, seasonStartMsInTz, startOfDayMsInTz } from './periods';
+import { dayKeyInTz, weekKeyInTz, seasonKeyInTz, weekStartMsInTz, startOfDayMsInTz } from './periods';
 import { assignRanks, paginate } from './ranking';
+import { projectionPlan } from './projections';
 import type {
   ArenaClaimResult,
   ArenaDayCounter,
@@ -75,7 +76,7 @@ export async function createArenaProfile(
   const now = Date.now();
   const profile: ArenaProfile = { arenaId, ...input, createdAt: now, updatedAt: now };
   await db.ref(`arenaProfiles/${uid}`).set(profile);
-  await projectScores(uid); // publish public score projections per visibility
+  await syncProjections(uid); // publish public score projections per visibility
   return profile;
 }
 
@@ -85,7 +86,7 @@ export async function updateArenaProfile(
 ): Promise<ArenaProfile | null> {
   const db = getAdminDb();
   await db.ref(`arenaProfiles/${uid}`).update({ ...patch, updatedAt: Date.now() });
-  await projectScores(uid); // joining/leaving boards changes projections
+  await syncProjections(uid); // joining/leaving boards changes projections
   return getArenaProfile(uid);
 }
 
@@ -143,20 +144,20 @@ export async function getLifetimeState(uid: string): Promise<ArenaLifetimeState>
 }
 
 /**
- * Keep public projections in sync with the private balance, honouring
- * participation flags: scores exist publicly only while the user participates
- * in at least one competition. Global boards additionally filter by
- * visibility.global at read time.
+ * Reconcile public projections with CURRENT consent (A2 fix). Whatever the
+ * visibility is now, this converges the public paths to exactly what consent
+ * allows: global-off deletes the lifetime ladder entry, both-off deletes every
+ * public projection. Multi-path update keeps it atomic.
  */
-export async function projectScores(uid: string): Promise<void> {
+export async function syncProjections(uid: string): Promise<void> {
   const db = getAdminDb();
   const [profile, lifetime] = await Promise.all([getArenaProfile(uid), getLifetimeState(uid)]);
-  if (!profile || (!profile.visibility.global && !profile.visibility.friends)) return;
+  const plan = projectionPlan(profile !== null, profile?.visibility);
 
-  const now = Date.now();
   const updates: Record<string, unknown> = {};
+  const now = Date.now();
 
-  if (profile.visibility.global) {
+  if (plan.writeLifetime && profile) {
     const existing = (await db.ref(`arenaScores/lifetime/${uid}`).get()).val() as ArenaScoreEntry | null;
     updates[`arenaScores/lifetime/${uid}`] = {
       score: lifetime.xp,
@@ -164,8 +165,22 @@ export async function projectScores(uid: string): Promise<void> {
       prevRank: existing?.prevRank,
       lastRank: existing?.lastRank,
     } satisfies ArenaScoreEntry;
+  } else if (plan.deleteLifetime) {
+    updates[`arenaScores/lifetime/${uid}`] = null;
   }
-  // weekly/season entries are written at award time; nothing to seed here.
+
+  if (plan.deletePeriods) {
+    // Remove every stored weekly/seasonal projection for this user (bounded scan).
+    for (const period of ['weekly', 'season'] as const) {
+      const s = await db.ref(`arenaScores/${period}`).orderByKey().limitToFirst(104).get();
+      if (s.exists()) {
+        for (const periodKey of Object.keys(s.val() as Record<string, unknown>)) {
+          updates[`arenaScores/${period}/${periodKey}/${uid}`] = null;
+        }
+      }
+    }
+  }
+
   if (Object.keys(updates).length > 0) await db.ref().update(updates);
 }
 
@@ -190,11 +205,17 @@ interface AwardContext {
   sourceId?: string;
 }
 
+/** Evidence reads accept ONLY server-sealed sessions — a client can forge
+ *  `status`/`durationSec`, but never `verified`/`serverDurationSec` (rules
+ *  deny those fields to client writes; see realtime-database.rules.json). */
 async function readOwnWorkout(uid: string, sessionId: string): Promise<SessionLike | null> {
   const s = await getAdminDb().ref(`users/${uid}/workouts/${sessionId}`).get();
   if (!s.exists()) return null;
   const v = s.val() as WorkoutSession;
-  return { durationSec: v.durationSec, status: v.status, planId: v.planId };
+  if (v.verified !== true || typeof v.serverDurationSec !== 'number') {
+    return { durationSec: v.durationSec, status: v.status, planId: v.planId, verified: false };
+  }
+  return { durationSec: v.serverDurationSec, status: v.status, planId: v.planId, verified: true };
 }
 
 async function readOwnNutritionDay(uid: string, dayKey: string): Promise<NutritionDayLike> {
@@ -223,7 +244,8 @@ async function workoutDaysInRange(uid: string, startMs: number): Promise<Set<str
   const days = new Set<string>();
   if (q.exists()) {
     for (const v of Object.values(q.val() as Record<string, WorkoutSession>)) {
-      days.add(new Date(v.startedAt).toISOString().slice(0, 10)); // day grouping refined with tz below
+      // only server-sealed sessions count toward missions/milestones
+      if (v.verified === true) days.add(new Date(v.startedAt).toISOString().slice(0, 10));
     }
   }
   return days;
@@ -296,8 +318,9 @@ export async function awardXp({
   }
 
   // ── 4. Move aggregates transactionally. If an aggregate transaction fails,
-  //        the event remains the source of truth and can be reprocessed. ──
-  const participates = profile.visibility.global || profile.visibility.friends;
+  //        the event remains the source of truth and can be reprocessed.
+  //        Projections follow CURRENT consent (projectionPlan, A2 fix). ──
+  const plan = projectionPlan(true, profile.visibility);
   try {
     await db.ref(`arenaState/${uid}/days/${dayKey}`).transaction((cur: ArenaDayCounter | null) => ({
       xp: (cur?.xp ?? 0) + xp,
@@ -315,14 +338,14 @@ export async function awardXp({
     const prevLevel = levelOf(lifetime.xp - xp);
     const leveledUp = lifetime.level > prevLevel;
 
-    if (participates) {
+    if (plan.writePeriods) {
       const scoreUpdate = (cur: ArenaScoreEntry | null) => ({
         score: (cur?.score ?? 0) + xp,
         updatedAt: Date.now(),
         prevRank: cur?.prevRank,
         lastRank: cur?.lastRank,
       });
-      if (profile.visibility.global) {
+      if (plan.writeLifetime) {
         await db.ref(`arenaScores/lifetime/${uid}`).transaction((cur: ArenaScoreEntry | null) => ({
           score: lifetime.xp,
           updatedAt: Date.now(),
@@ -336,7 +359,7 @@ export async function awardXp({
       // Rank snapshots for the delta display (bounded reads; best-effort).
       const [weekRank, lifeRank] = await Promise.all([
         computeRankInPath(`arenaScores/weekly/${weekKey}`, (await db.ref(`arenaScores/weekly/${weekKey}/${uid}/score`).get()).val() ?? 0, uid),
-        profile.visibility.global
+        plan.writeLifetime
           ? computeRankInPath('arenaScores/lifetime', lifetime.xp, uid)
           : Promise.resolve(0),
       ]);
@@ -344,7 +367,7 @@ export async function awardXp({
         [`arenaScores/weekly/${weekKey}/${uid}/prevRank`]: (await db.ref(`arenaScores/weekly/${weekKey}/${uid}/lastRank`).get()).val() ?? null,
         [`arenaScores/weekly/${weekKey}/${uid}/lastRank`]: weekRank,
       };
-      if (profile.visibility.global && lifeRank > 0) {
+      if (plan.writeLifetime && lifeRank > 0) {
         metaUpdate[`arenaScores/lifetime/${uid}/prevRank`] =
           (await db.ref(`arenaScores/lifetime/${uid}/lastRank`).get()).val() ?? null;
         metaUpdate[`arenaScores/lifetime/${uid}/lastRank`] = lifeRank;

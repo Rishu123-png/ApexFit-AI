@@ -39,6 +39,8 @@ export interface SessionLike {
   durationSec: number;
   status: 'completed' | 'partial';
   planId: string;
+  /** must be true for the session to earn XP (server-sealed via /api/workouts/seal) */
+  verified?: boolean;
 }
 
 export interface NutritionDayLike {
@@ -70,6 +72,8 @@ export function checkEligibility(
     case 'workout_completed': {
       const s = facts.session;
       if (!s) return { ok: false, reason: 'Workout session not found.' };
+      if (s.verified !== true)
+        return { ok: false, reason: 'Session is not server-verified — unverified activity earns no XP.' };
       if (cfg.mobilityPlanIds.includes(s.planId))
         return { ok: false, reason: 'Mobility sessions earn the mobility reward instead.' };
       if (s.status !== 'completed')
@@ -83,6 +87,8 @@ export function checkEligibility(
     case 'mobility_session': {
       const s = facts.session;
       if (!s) return { ok: false, reason: 'Workout session not found.' };
+      if (s.verified !== true)
+        return { ok: false, reason: 'Session is not server-verified — unverified activity earns no XP.' };
       if (!cfg.mobilityPlanIds.includes(s.planId))
         return { ok: false, reason: 'This plan is not a mobility/recovery session.' };
       if (s.status !== 'completed')
