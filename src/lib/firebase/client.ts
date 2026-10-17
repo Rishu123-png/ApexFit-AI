@@ -25,8 +25,20 @@ const config: Record<string, string | undefined> = {
   appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
 };
 
+// Static env map: Next.js inlines NEXT_PUBLIC_* values into the browser
+// bundle ONLY for static member access (process.env.NAME). A dynamic
+// process.env[k] lookup is never inlined and is always undefined in the
+// browser — so the configured-ness check must read from this static map.
+const ENV_VALUES: Record<(typeof ENV_KEYS)[number], string | undefined> = {
+  NEXT_PUBLIC_FIREBASE_API_KEY: process.env.NEXT_PUBLIC_FIREBASE_API_KEY,
+  NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN,
+  NEXT_PUBLIC_FIREBASE_DATABASE_URL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL,
+  NEXT_PUBLIC_FIREBASE_PROJECT_ID: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID,
+  NEXT_PUBLIC_FIREBASE_APP_ID: process.env.NEXT_PUBLIC_FIREBASE_APP_ID,
+};
+
 export function missingFirebaseEnv(): string[] {
-  return ENV_KEYS.filter((k) => !process.env[k]);
+  return ENV_KEYS.filter((k) => !ENV_VALUES[k]);
 }
 
 export function isFirebaseConfigured(): boolean {
