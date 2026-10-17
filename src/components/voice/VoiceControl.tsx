@@ -19,7 +19,7 @@ interface Props {
 
 function stateLabel(s: SpeechState): string | null {
   switch (s.kind) {
-    case 'listening': return 'Listening…';
+    case 'listening': return s.partial ? `Listening… “${s.partial}”` : 'Listening…';
     case 'denied': return 'Microphone permission denied — typed controls remain fully functional.';
     case 'error': return s.message;
     case 'unsupported': return 'Voice input isn’t supported in this browser — use the normal controls.';
