@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyRequestUser, AdminNotConfiguredError } from '@/lib/firebase/admin';
 import { groqVision, GroqNotConfiguredError, GroqRequestError } from '@/lib/ai/groq';
 import { parseVisionEstimate, VISION_PROMPT } from '@/lib/ai/vision-parse';
-import { rateLimit } from '@/lib/ai/ratelimit';
+import { checkRateLimit, clientIp } from '@/lib/ai/ratelimit';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,9 +31,14 @@ export async function POST(req: NextRequest) {
   }
   if (!decoded) return NextResponse.json({ error: 'UNAUTHENTICATED' }, { status: 401 });
 
-  const rl = rateLimit(`foodscan:${decoded.uid}`, 10, 60 * 60 * 1000);
+  const rl = await checkRateLimit(`foodscan:${decoded.uid}`, 10, 60 * 60 * 1000);
   if (!rl.ok) {
     return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
+  }
+  // IP-aware second bucket — cost control against account-hopping abuse.
+  const rlIp = await checkRateLimit(`foodscan:ip:${clientIp(req)}`, 60, 60 * 60 * 1000);
+  if (!rlIp.ok) {
+    return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rlIp.retryAfterSec }, { status: 429 });
   }
 
   if (process.env.GROQ_VISION_ENABLED !== 'true') {
