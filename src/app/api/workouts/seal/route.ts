@@ -1,10 +1,11 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { requireArenaUser, isErrorResponse } from '@/lib/arena/http';
 import { getAdminDb } from '@/lib/firebase/admin';
 import { validateSessionSeal, deriveSessionStatus } from '@/lib/workouts/seal';
 import { checkRateLimit } from '@/lib/ai/ratelimit';
 import { WORKOUT_PLANS } from '@/lib/data/plans';
 import type { WorkoutSession } from '@/lib/types';
+import { apiJson, logApiEvent, logApiFailure, requestContext } from '@/lib/observability/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,26 +47,37 @@ function matchPlan(session: WorkoutSession, planId: string) {
  * that physical exercise can be proven from a browser.
  */
 export async function POST(req: NextRequest) {
+  const trace = requestContext(req, 'POST /api/workouts/seal');
   const auth = await requireArenaUser(req);
   if (isErrorResponse(auth)) return auth;
   const { uid } = auth;
 
   const rl = await checkRateLimit(`workout-seal:${uid}`, 40, 60 * 60 * 1000);
-  if (!rl.ok) return NextResponse.json({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, { status: 429 });
+  if (!rl.ok) {
+    logApiFailure(trace, 'RATE_LIMITED', 429);
+    return apiJson({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, trace, { status: 429 });
+  }
 
   let body: Record<string, unknown>;
   try {
     const raw = await req.text();
-    if (raw.length > 2048) return NextResponse.json({ error: 'PAYLOAD_TOO_LARGE' }, { status: 413 });
+    if (raw.length > 2048) {
+      logApiFailure(trace, 'PAYLOAD_TOO_LARGE', 413);
+      return apiJson({ error: 'PAYLOAD_TOO_LARGE' }, trace, { status: 413 });
+    }
     body = JSON.parse(raw) as Record<string, unknown>;
   } catch {
-    return NextResponse.json({ error: 'BAD_REQUEST' }, { status: 400 });
+    logApiFailure(trace, 'BAD_REQUEST', 400);
+    return apiJson({ error: 'BAD_REQUEST' }, trace, { status: 400 });
   }
 
   const sessionId = typeof body.sessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.sessionId)
     ? body.sessionId
     : null;
-  if (!sessionId) return NextResponse.json({ error: 'BAD_REQUEST' }, { status: 400 });
+  if (!sessionId) {
+    logApiFailure(trace, 'BAD_REQUEST', 400);
+    return apiJson({ error: 'BAD_REQUEST' }, trace, { status: 400 });
+  }
 
   try {
     const db = getAdminDb();
@@ -74,14 +86,19 @@ export async function POST(req: NextRequest) {
       ref.get(),
       db.ref(`workoutStarts/${uid}/${sessionId}`).get(),
     ]);
-    if (!sessionSnap.exists()) return NextResponse.json({ error: 'NOT_FOUND' }, { status: 404 });
+    if (!sessionSnap.exists()) {
+      logApiFailure(trace, 'NOT_FOUND', 404);
+      return apiJson({ error: 'NOT_FOUND' }, trace, { status: 404 });
+    }
 
     const existing = sessionSnap.val() as WorkoutSession & { verified?: boolean; sealedAt?: number };
     if (existing.verified === true) {
-      return NextResponse.json({ sealed: true, alreadySealed: true, status: existing.status });
+      logApiEvent('info', trace, 'workout_seal_idempotent');
+      return apiJson({ sealed: true, alreadySealed: true, status: existing.status }, trace);
     }
     if (!startSnap.exists()) {
-      return NextResponse.json({ sealed: false, reason: 'This session was not started by the verification service.' }, { status: 422 });
+      logApiFailure(trace, 'NO_VERIFICATION_START', 422);
+      return apiJson({ sealed: false, reason: 'This session was not started by the verification service.' }, trace, { status: 422 });
     }
 
     const serverStart = startSnap.val() as ServerStart;
@@ -92,7 +109,8 @@ export async function POST(req: NextRequest) {
       !Number.isFinite(serverStart.expiresAt) ||
       serverStart.expiresAt < sealedAt
     ) {
-      return NextResponse.json({ sealed: false, reason: 'The verification window has expired.' }, { status: 422 });
+      logApiFailure(trace, 'VERIFICATION_EXPIRED', 422);
+      return apiJson({ sealed: false, reason: 'The verification window has expired.' }, trace, { status: 422 });
     }
 
     let refusal: string | null = null;
@@ -144,19 +162,22 @@ export async function POST(req: NextRequest) {
     });
 
     if (!transaction.committed) {
-      return NextResponse.json({ sealed: false, reason: refusal ?? 'Session could not be verified.' }, { status: 422 });
+      logApiFailure(trace, 'SEAL_REFUSED', 422);
+      return apiJson({ sealed: false, reason: refusal ?? 'Session could not be verified.' }, trace, { status: 422 });
     }
     const sealed = transaction.snapshot.val() as WorkoutSession & { verified?: boolean; status?: 'completed' | 'partial' };
     if (sealed.verified !== true) {
-      return NextResponse.json({ sealed: false, reason: 'Session could not be verified.' }, { status: 422 });
+      logApiFailure(trace, 'SEAL_REFUSED', 422);
+      return apiJson({ sealed: false, reason: 'Session could not be verified.' }, trace, { status: 422 });
     }
 
     // Retain no reusable start token after the first successful seal. A retry
     // remains idempotent because the immutable verified session is checked first.
     await db.ref(`workoutStarts/${uid}/${sessionId}`).remove();
-    return NextResponse.json({ sealed: true, alreadySealed: false, status: sealed.status ?? sealedStatus });
-  } catch (err) {
-    console.error('[workouts] seal failed:', err instanceof Error ? err.message : 'unknown');
-    return NextResponse.json({ error: 'SEAL_FAILED' }, { status: 500 });
+    logApiEvent('info', trace, 'workout_sealed');
+    return apiJson({ sealed: true, alreadySealed: false, status: sealed.status ?? sealedStatus }, trace);
+  } catch {
+    logApiFailure(trace, 'SEAL_FAILED', 500);
+    return apiJson({ error: 'SEAL_FAILED' }, trace, { status: 500 });
   }
 }
