@@ -67,7 +67,9 @@ export function claimArena(
 ): Promise<ArenaClaimResult> {
   return arenaFetch<ArenaClaimResult>(token, '/api/arena/claim', {
     method: 'POST',
-    body: { type, sourceId: opts.sourceId, tz: Intl.DateTimeFormat().resolvedOptions().timeZone },
+    // Period boundaries are determined from the server-stored Arena profile;
+    // never let an individual reward request choose a timezone.
+    body: { type, sourceId: opts.sourceId },
   });
 }
 
