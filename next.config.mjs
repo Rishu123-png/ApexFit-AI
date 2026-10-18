@@ -1,6 +1,10 @@
 /** @type {import('next').NextConfig} */
+const devEval = process.env.NODE_ENV === 'development' ? " 'unsafe-eval'" : '';
+
 const nextConfig = {
   reactStrictMode: true,
+  // Supports local Playwright/mobile checks without weakening production CSP.
+  allowedDevOrigins: ['127.0.0.1', 'localhost'],
   async headers() {
     return [
       {
@@ -17,7 +21,7 @@ const nextConfig = {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://cdn.jsdelivr.net",
+              `script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'${devEval} https://cdn.jsdelivr.net`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data: blob:",
               "connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://*.firebaseio.com https://*.firebasedatabase.app wss://*.firebaseio.com wss://*.firebasedatabase.app https://api.groq.com https://cdn.jsdelivr.net https://storage.googleapis.com https://*.upstash.io",

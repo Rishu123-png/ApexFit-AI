@@ -4,168 +4,313 @@
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": "auth !== null && auth.uid === $uid",
-
         "profile": {
           ".validate": "newData.hasChildren(['displayName', 'email'])",
-          "displayName": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80" },
-          "email": { ".validate": "newData.isString() && newData.val().length <= 120" },
-          "$other": { ".validate": true }
+          "displayName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+          },
+          "email": {
+            ".validate": "newData.isString() && newData.val().length <= 120"
+          },
+          "$other": {
+            ".validate": true
+          },
+          "schemaVersion": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1"
+          }
         },
-
         "preferences": {
           ".validate": "newData.hasChildren(['calorieTarget', 'proteinTarget', 'waterTargetMl'])",
-          "calorieTarget": { ".validate": "newData.isNumber() && newData.val() >= 1400 && newData.val() <= 6000" },
-          "proteinTarget": { ".validate": "newData.isNumber() && newData.val() >= 20 && newData.val() <= 400" },
-          "waterTargetMl": { ".validate": "newData.isNumber() && newData.val() >= 500 && newData.val() <= 8000" },
-          "$other": { ".validate": true }
+          "calorieTarget": {
+            ".validate": "newData.isNumber() && newData.val() >= 1400 && newData.val() <= 6000"
+          },
+          "proteinTarget": {
+            ".validate": "newData.isNumber() && newData.val() >= 20 && newData.val() <= 400"
+          },
+          "waterTargetMl": {
+            ".validate": "newData.isNumber() && newData.val() >= 500 && newData.val() <= 8000"
+          },
+          "$other": {
+            ".validate": true
+          },
+          "schemaVersion": {
+            ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1"
+          }
         },
-
         "nutrition": {
           "$date": {
             "$entryId": {
               ".validate": "newData.hasChildren(['name', 'meal', 'servings', 'calories', 'protein', 'carbs', 'fat', 'source'])",
-              "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120" },
-              "portionLabel": { ".validate": "newData.isString() && newData.val().length <= 80" },
-              "meal": { ".validate": "newData.isString() && (newData.val() === 'breakfast' || newData.val() === 'lunch' || newData.val() === 'snacks' || newData.val() === 'dinner')" },
-              "servings": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 20" },
-              "calories": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3000" },
-              "protein": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300" },
-              "carbs": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 600" },
-              "fat": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300" },
-              "source": { ".validate": "newData.val() === 'reference' || newData.val() === 'estimate' || newData.val() === 'custom' || newData.val() === 'verified'" },
-              "loggedAt": { ".validate": "newData.isNumber()" },
-              "$other": { ".validate": true }
+              "name": {
+                ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+              },
+              "portionLabel": {
+                ".validate": "newData.isString() && newData.val().length <= 80"
+              },
+              "meal": {
+                ".validate": "newData.isString() && (newData.val() === 'breakfast' || newData.val() === 'lunch' || newData.val() === 'snacks' || newData.val() === 'dinner')"
+              },
+              "servings": {
+                ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 20"
+              },
+              "calories": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3000"
+              },
+              "protein": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300"
+              },
+              "carbs": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 600"
+              },
+              "fat": {
+                ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300"
+              },
+              "source": {
+                ".validate": "newData.val() === 'reference' || newData.val() === 'estimate' || newData.val() === 'custom' || newData.val() === 'verified'"
+              },
+              "loggedAt": {
+                ".validate": "newData.isNumber()"
+              },
+              "$other": {
+                ".validate": true
+              },
+              "schemaVersion": {
+                ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1"
+              }
             }
           }
         },
-
         "hydration": {
           "$date": {
             ".validate": "newData.hasChildren(['totalMl'])",
-            "totalMl": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 15000" },
+            "totalMl": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 15000"
+            },
             "logs": {
               "$logId": {
                 ".validate": "newData.hasChildren(['ml', 'ts'])",
-                "ml": { ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 2000" },
-                "ts": { ".validate": "newData.isNumber()" },
-                "$other": { ".validate": true }
+                "ml": {
+                  ".validate": "newData.isNumber() && newData.val() > 0 && newData.val() <= 2000"
+                },
+                "ts": {
+                  ".validate": "newData.isNumber()"
+                },
+                "$other": {
+                  ".validate": true
+                }
               }
             },
-            "$other": { ".validate": true }
+            "$other": {
+              ".validate": true
+            }
           }
         },
-
         "checkins": {
           "$date": {
             ".validate": "$date.matches(/^\\d{4}-\\d{2}-\\d{2}$/) && (newData.val() === null || newData.isNumber() === false)",
-            "sleepHrs": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 24" },
-            "energy": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5" },
-            "soreness": { ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5" },
-            "createdAt": { ".validate": "newData.isNumber()" },
-            "$other": { ".validate": true }
+            "sleepHrs": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 24"
+            },
+            "energy": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5"
+            },
+            "soreness": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 5"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": true
+            }
           }
         },
         "bodyMetrics": {
           "$metricId": {
             ".validate": "newData.hasChildren(['weightKg', 'heightCm', 'recordedAt'])",
-            "weightKg": { ".validate": "newData.isNumber() && newData.val() >= 25 && newData.val() <= 350" },
-            "heightCm": { ".validate": "newData.isNumber() && newData.val() >= 100 && newData.val() <= 250" },
-            "recordedAt": { ".validate": "newData.isNumber()" },
-            "$other": { ".validate": false }
+            "weightKg": {
+              ".validate": "newData.isNumber() && newData.val() >= 25 && newData.val() <= 350"
+            },
+            "heightCm": {
+              ".validate": "newData.isNumber() && newData.val() >= 100 && newData.val() <= 250"
+            },
+            "recordedAt": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            }
           }
         },
         "workouts": {
           "$workoutId": {
             ".validate": "newData.hasChildren(['planId', 'planName', 'startedAt', 'durationSec', 'totalSets', 'status']) && (!data.child('sealedAt').exists() || newData.val() === data.val())",
-            "planId": { ".validate": "newData.isString() && newData.val().length <= 60" },
-            "planName": { ".validate": "newData.isString() && newData.val().length <= 120" },
-            "startedAt": { ".validate": "newData.isNumber()" },
-            "endedAt": { ".validate": "newData.isNumber()" },
-            "durationSec": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 21600" },
-            "totalSets": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500" },
-            "status": { ".validate": "newData.val() === 'completed' || newData.val() === 'partial'" },
-            "verified": { ".validate": "!data.exists() ? (!newData.exists() || newData.val() === false) : newData.val() === data.val()" },
-            "sealedAt": { ".validate": "!data.exists() ? !newData.exists() : newData.val() === data.val()" },
-            "serverDurationSec": { ".validate": "!data.exists() ? !newData.exists() : newData.val() === data.val()" },
+            "planId": {
+              ".validate": "newData.isString() && newData.val().length <= 60"
+            },
+            "planName": {
+              ".validate": "newData.isString() && newData.val().length <= 120"
+            },
+            "startedAt": {
+              ".validate": "newData.isNumber()"
+            },
+            "endedAt": {
+              ".validate": "newData.isNumber()"
+            },
+            "durationSec": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 21600"
+            },
+            "totalSets": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500"
+            },
+            "status": {
+              ".validate": "newData.val() === 'completed' || newData.val() === 'partial'"
+            },
+            "verified": {
+              ".validate": "!data.exists() ? (!newData.exists() || newData.val() === false) : newData.val() === data.val()"
+            },
+            "sealedAt": {
+              ".validate": "!data.exists() ? !newData.exists() : newData.val() === data.val()"
+            },
+            "serverDurationSec": {
+              ".validate": "!data.exists() ? !newData.exists() : newData.val() === data.val()"
+            },
             "exercises": {
               "$exIdx": {
                 ".validate": "newData.hasChildren(['name', 'targetSets', 'completedSets'])",
-                "$other": { ".validate": true }
+                "$other": {
+                  ".validate": true
+                }
               }
             },
-            "$other": { ".validate": true }
+            "$other": {
+              ".validate": true
+            },
+            "schemaVersion": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1"
+            }
           }
         },
-
-        "$other": { ".validate": true }
+        "$other": {
+          ".validate": false
+        },
+        "recipes": {
+          "$recipeId": {
+            ".validate": "newData.hasChildren(['schemaVersion', 'name', 'portionLabel', 'defaultMeal', 'calories', 'protein', 'carbs', 'fat', 'createdAt', 'updatedAt'])",
+            "schemaVersion": {
+              ".validate": "newData.isNumber() && newData.val() >= 1 && newData.val() <= 1"
+            },
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 120"
+            },
+            "portionLabel": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 80"
+            },
+            "defaultMeal": {
+              ".validate": "newData.val() === 'breakfast' || newData.val() === 'lunch' || newData.val() === 'snacks' || newData.val() === 'dinner'"
+            },
+            "calories": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 3000"
+            },
+            "protein": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300"
+            },
+            "carbs": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 600"
+            },
+            "fat": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 300"
+            },
+            "createdAt": {
+              ".validate": "newData.isNumber() && (!data.exists() || newData.val() === data.val())"
+            },
+            "updatedAt": {
+              ".validate": "newData.isNumber()"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
       }
     },
-
     "workoutStarts": {
       "$uid": {
         ".read": false,
         ".write": false
       }
     },
-
     "arenaProfiles": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       },
-      ".indexOn": ["arenaId"]
+      ".indexOn": [
+        "arenaId"
+      ]
     },
-
     "arenaScores": {
       ".read": false,
       ".write": false,
-      "lifetime": { ".indexOn": ["score"] },
-      "weekly": { "$week": { ".indexOn": ["score"] } },
-      "season": { "$season": { ".indexOn": ["score"] } }
+      "lifetime": {
+        ".indexOn": [
+          "score"
+        ]
+      },
+      "weekly": {
+        "$week": {
+          ".indexOn": [
+            "score"
+          ]
+        }
+      },
+      "season": {
+        "$season": {
+          ".indexOn": [
+            "score"
+          ]
+        }
+      }
     },
-
     "arenaEvents": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       }
     },
-
     "arenaState": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       }
     },
-
     "friendRequests": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       }
     },
-
     "friendRequestsSent": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       }
     },
-
     "friendships": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       }
     },
-
     "blocks": {
       "$uid": {
         ".read": "auth !== null && auth.uid === $uid",
         ".write": false
       }
     },
-
-    "$other": { ".read": false, ".write": false }
+    "$other": {
+      ".read": false,
+      ".write": false
+    }
   }
 }
