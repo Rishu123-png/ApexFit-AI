@@ -30,7 +30,10 @@ export default function ArenaPage() {
 
   const load = useCallback(async () => {
     try {
-      const token = await getIdToken();
+      const token = await Promise.race([
+        getIdToken(),
+        new Promise<string>((_, reject) => window.setTimeout(() => reject(new DOMException('Authentication timed out', 'TimeoutError')), 15000)),
+      ]);
       const data = await arenaFetch<ArenaProfileResponse>(token, '/api/arena/profile');
       setState({ status: 'ready', data });
     } catch (err) {

@@ -72,6 +72,18 @@ export default function DashboardPage() {
   const firstName = (user!.displayName ?? 'Athlete').split(' ')[0];
   const loadingCore = meals === null || waterMl === null || week === null;
 
+  useEffect(() => {
+    if (!loadingCore) return;
+    const timeout = window.setTimeout(() => {
+      setMeals((value) => value ?? []);
+      setWaterMl((value) => value ?? 0);
+      setWeek((value) => value ?? []);
+      setRecent((value) => value ?? []);
+      setDataError(true);
+    }, 15000);
+    return () => window.clearTimeout(timeout);
+  }, [loadingCore]);
+
   async function quickWater(ml: number) {
     setWaterBusy(true);
     try {

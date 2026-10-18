@@ -46,7 +46,8 @@ export default function OnboardingPage() {
 
   useEffect(() => {
     if (!user) return;
-    return subscribeProfile(user.uid, (next) => {
+    const timeout = window.setTimeout(() => setProfileError(true), 15000);
+    const unsubscribe = subscribeProfile(user.uid, (next) => {
       if (next?.onboardingCompleted) {
         router.replace('/dashboard');
         return;
@@ -63,6 +64,10 @@ export default function OnboardingPage() {
         setEquipment(next.equipmentAccess ?? 'none');
       }
     }, () => setProfileError(true));
+    return () => {
+      window.clearTimeout(timeout);
+      unsubscribe();
+    };
   }, [router, user]);
 
   function toggleFocus(item: TrainingFocus) {

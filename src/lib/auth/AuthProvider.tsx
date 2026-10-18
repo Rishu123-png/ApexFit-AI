@@ -85,20 +85,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     // Session persistence: user stays signed in across browser restarts.
     setPersistence(fb.auth, browserLocalPersistence).catch(() => undefined);
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (!settled) {
+        setUser(null);
+        setLoading(false);
+      }
+    }, 15000);
     const unsub = onAuthStateChanged(
       fb.auth,
       (u) => {
+        settled = true;
+        window.clearTimeout(timeout);
         setUser(u);
         setLoading(false);
       },
       () => {
+        settled = true;
+        window.clearTimeout(timeout);
         // Do not leave mobile users on an infinite splash screen when the
         // browser cannot reach Firebase Auth or restore local persistence.
         setUser(null);
         setLoading(false);
       },
     );
-    return unsub;
+    return () => {
+      settled = true;
+      window.clearTimeout(timeout);
+      unsub();
+    };
   }, []);
 
   const requireAuth = useCallback(() => {
