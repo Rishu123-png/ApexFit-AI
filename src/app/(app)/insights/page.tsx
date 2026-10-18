@@ -2,6 +2,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import { subscribeRecentWorkouts, subscribeWeekWorkouts, subscribeCheckins, saveCheckin, type RecoveryCheckinRecord } from '@/lib/db';
@@ -52,6 +53,7 @@ export default function InsightsPage() {
   const [checkinState, setCheckinState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [copied, setCopied] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => {
     if (!uid) return;
@@ -196,20 +198,31 @@ export default function InsightsPage() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="flex items-center gap-2 text-2xl font-extrabold tracking-tight sm:text-3xl">
-            <IconTrendingUp className="text-neon" width={26} /> Apex <span className="neon-text">Insights</span>
-          </h1>
-          <p className="mt-1 text-sm text-slate-400">
-            Summaries, personal records and trends — computed on-device from your real history — server-checked sessions are plausibility-screened, not fraud-proof.
-          </p>
+      <motion.section
+        initial={reducedMotion ? false : { opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: 'spring', stiffness: 240, damping: 25 }}
+        className="relative overflow-hidden rounded-[1.8rem] border border-violet/25 bg-[linear-gradient(135deg,rgba(35,17,66,0.72),rgba(8,12,27,0.94)_58%,rgba(7,47,67,0.55))] px-5 py-5 shadow-[0_18px_54px_rgba(0,0,0,0.22)] sm:px-7 sm:py-6"
+      >
+        <div className="pointer-events-none absolute -right-12 -top-16 h-52 w-52 rounded-full bg-violet/20 blur-3xl" aria-hidden="true" />
+        <div className="relative flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.2em] text-violet-300">
+              <IconTrendingUp width={14} /> Personal analytics
+            </div>
+            <h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">
+              Apex <span className="neon-text">Insights</span>
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-300">
+              Training load, recovery signals and progress patterns from your own history. Server-checked sessions are plausibility-screened, not proof of exercise.
+            </p>
+          </div>
+          <Button variant="outline" className="border-white/15 bg-white/[0.045] px-3 py-2 text-xs" onClick={copyShare} disabled={weekCount === 0}>
+            {copied ? <IconCheck width={14} className="text-mint" /> : <IconCopy width={14} />}
+            {copied ? 'Copied!' : 'Copy weekly card'}
+          </Button>
         </div>
-        <Button variant="outline" className="px-3 py-1.5 text-xs" onClick={copyShare} disabled={weekCount === 0}>
-          {copied ? <IconCheck width={14} className="text-mint" /> : <IconCopy width={14} />}
-          {copied ? 'Copied!' : 'Copy weekly card'}
-        </Button>
-      </div>
+      </motion.section>
 
       {/* Today's deterministic guidance */}
       <GlassCard className="flex flex-wrap items-center gap-3 border border-electric-500/20 bg-electric-500/[0.04]">
@@ -328,13 +341,19 @@ export default function InsightsPage() {
               { label: 'Total minutes', value: String(stats.totalMinutes) },
               { label: 'Current streak', value: `${stats.streak}d`, flame: true },
             ].map((s) => (
-              <div key={s.label} className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4 text-center">
+              <motion.div
+                key={s.label}
+                initial={reducedMotion ? false : { opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: reducedMotion ? 0 : 0.04, type: 'spring', stiffness: 300, damping: 25 }}
+                className="rounded-2xl border border-white/10 bg-[linear-gradient(145deg,rgba(255,255,255,0.065),rgba(255,255,255,0.018))] px-4 py-4 text-center shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+              >
                 <p className="flex items-center justify-center gap-1 text-2xl font-extrabold text-neon">
                   {s.flame && stats.streak >= 2 && <IconFlame width={18} className="text-amber" />}
                   {s.value}
                 </p>
                 <p className="mt-0.5 text-[11px] uppercase tracking-wider text-slate-500">{s.label}</p>
-              </div>
+              </motion.div>
             ))}
           </div>
 
