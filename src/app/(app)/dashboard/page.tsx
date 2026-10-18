@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
@@ -16,10 +16,9 @@ import { dateKey, friendlyDate, last7DayLabels, formatDuration, formatTime } fro
 import { DEFAULT_PREFERENCES, type NutritionEntry, type Preferences, type WorkoutSession } from '@/lib/types';
 import { GlassCard, SectionTitle, Badge, Button, EmptyState, Spinner } from '@/components/ui';
 import { ProgressRing, MiniBars, MacroBar } from '@/components/charts';
-import { CoachPanel } from '@/components/dashboard/CoachPanel';
 import { WORKOUT_PLANS } from '@/lib/data/plans';
 import {
-  IconPlay, IconPlus, IconDroplet, IconFlame, IconDumbbell, IconBowl, IconClock, IconSparkles, IconCamera,
+  IconPlay, IconPlus, IconDroplet, IconFlame, IconDumbbell, IconBowl, IconClock, IconSparkles,
 } from '@/components/icons';
 
 export default function DashboardPage() {
@@ -34,7 +33,6 @@ export default function DashboardPage() {
   const [recent, setRecent] = useState<WorkoutSession[] | null>(null);
   const [waterBusy, setWaterBusy] = useState(false);
   const [waterFlash, setWaterFlash] = useState('');
-  const coachRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
 
   useEffect(() => subscribePreferences(uid, setPrefs), [uid]);
@@ -124,8 +122,8 @@ export default function DashboardPage() {
         <Button variant="outline" className="h-full w-full" onClick={() => quickWater(250)} loading={waterBusy}>
           <IconDroplet width={15} /> +250 ml
         </Button>
-        <Button variant="outline" className="h-full w-full" onClick={() => coachRef.current?.scrollIntoView({ behavior: 'smooth' })}>
-          <IconSparkles width={15} /> Ask AI
+        <Button variant="outline" className="h-full w-full" onClick={() => window.dispatchEvent(new Event('apexfit:open-coach'))}>
+          <IconSparkles width={15} /> Ask Apex
         </Button>
       </motion.div>
 
@@ -308,31 +306,12 @@ export default function DashboardPage() {
             )}
           </GlassCard>
 
-          {/* AI Coach */}
-          <div ref={coachRef} className="scroll-mt-20">
-            <CoachPanel
-              context={{
-                caloriesToday: Math.round(totals.calories),
-                proteinToday: Math.round(totals.protein),
-                waterMlToday: waterMl ?? 0,
-                workoutsThisWeek: week!.length,
-                calorieTarget: prefs.calorieTarget,
-                proteinTarget: prefs.proteinTarget,
-              }}
-            />
-          </div>
-
-
-          {/* Vision teaser */}
-          <GlassCard hover className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-violet/30 bg-violet/10 text-violet"><IconCamera width={20} /></div>
-              <div>
-                <p className="font-bold">Camera form tracking <Badge tone="amber">Beta soon</Badge></p>
-                <p className="text-sm text-slate-400">Pose-estimation session module is prepared — activate it to test your camera.</p>
-              </div>
+          <GlassCard hover className="flex flex-wrap items-center justify-between gap-4 border-electric-500/20 bg-electric-500/[0.035]">
+            <div>
+              <p className="font-bold">Live form guidance, inside your workout</p>
+              <p className="mt-1 text-sm text-slate-400">Start a session, enable your camera once, and ApexFit switches guidance for supported exercises without sending video anywhere.</p>
             </div>
-            <Link href="/camera"><Button variant="outline">Open vision studio</Button></Link>
+            <Link href="/workouts"><Button variant="outline">Start training</Button></Link>
           </GlassCard>
         </>
       )}
