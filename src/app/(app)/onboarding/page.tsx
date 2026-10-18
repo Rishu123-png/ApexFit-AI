@@ -25,6 +25,15 @@ const FOCUS: { id: TrainingFocus; label: string }[] = [
 
 const numeric = (value: string) => Number(value.trim());
 
+function startingCalories(weightKg: number, goal: FitnessGoal) {
+  const factor = goal === 'fat-loss' ? 28 : goal === 'muscle-gain' ? 34 : goal === 'strength' ? 32 : 30;
+  return Math.max(1400, Math.min(6000, Math.round((weightKg * factor) / 50) * 50));
+}
+
+function startingProtein(weightKg: number, goal: FitnessGoal) {
+  return Math.max(50, Math.min(220, Math.round(weightKg * (goal === 'muscle-gain' ? 1.6 : goal === 'strength' ? 1.5 : 1.3))));
+}
+
 export default function OnboardingPage() {
   const { user } = useAuth();
   const router = useRouter();
@@ -43,6 +52,9 @@ export default function OnboardingPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [profileError, setProfileError] = useState(false);
+  const enteredWeight = numeric(weight);
+  const suggestedCalories = Number.isFinite(enteredWeight) && enteredWeight > 0 ? startingCalories(enteredWeight, goal) : DEFAULT_PREFERENCES.calorieTarget;
+  const suggestedProtein = Number.isFinite(enteredWeight) && enteredWeight > 0 ? startingProtein(enteredWeight, goal) : DEFAULT_PREFERENCES.proteinTarget;
 
   useEffect(() => {
     if (!user) return;
@@ -107,7 +119,8 @@ export default function OnboardingPage() {
       const weightKg = numeric(weight);
       const target = targetWeight.trim() ? numeric(targetWeight) : undefined;
       const trainingDaysPerWeek = numeric(days);
-      const proteinTarget = Math.max(50, Math.min(220, Math.round(weightKg * (goal === 'muscle-gain' ? 1.6 : 1.3))));
+      const proteinTarget = startingProtein(weightKg, goal);
+      const calorieTarget = startingCalories(weightKg, goal);
       await Promise.all([
         updateProfileFields(user.uid, {
           heightCm, weightKg, ...(target !== undefined ? { targetWeightKg: target } : {}), goal, focusAreas: focus, experience, trainingDaysPerWeek,
@@ -115,7 +128,7 @@ export default function OnboardingPage() {
           ...(baselineChecked ? { localBodyBaselineCheckedAt: Date.now() } : {}),
         }),
         saveBodyMetric(user.uid, { heightCm, weightKg }),
-        savePreferences(user.uid, { ...DEFAULT_PREFERENCES, proteinTarget }),
+        savePreferences(user.uid, { ...DEFAULT_PREFERENCES, calorieTarget, proteinTarget }),
       ]);
       router.replace('/dashboard');
     } catch {
@@ -166,6 +179,10 @@ export default function OnboardingPage() {
           <div className="grid gap-2 sm:grid-cols-2">{GOALS.map((item) => <button key={item.id} onClick={() => setGoal(item.id)} className={clsx('rounded-2xl border p-3 text-left transition', goal === item.id ? 'border-electric-400 bg-electric-500/12 shadow-[0_0_18px_rgba(47,139,255,.12)]' : 'border-white/10 bg-white/[.025] hover:border-white/20')}><p className="text-sm font-bold">{item.label}</p><p className="mt-1 text-xs leading-relaxed text-slate-400">{item.detail}</p></button>)}</div>
           <div><p className="mb-2 text-sm font-bold">Focus areas <span className="font-normal text-slate-500">(choose up to 3)</span></p><div className="flex flex-wrap gap-2">{FOCUS.map((item) => <button key={item.id} onClick={() => toggleFocus(item.id)} className={clsx('rounded-full border px-3 py-2 text-xs font-bold transition', focus.includes(item.id) ? 'border-neon/50 bg-neon/10 text-neon' : 'border-white/10 bg-white/[.025] text-slate-400 hover:text-slate-200')}>{focus.includes(item.id) && <IconCheck width={12} className="mr-1 inline" />}{item.label}</button>)}</div></div>
           <div className="grid gap-3 sm:grid-cols-3"><SelectField label="Experience" value={experience} setValue={(value) => setExperience(value as ExperienceLevel)} options={['beginner', 'intermediate', 'advanced']} /><NumberField label="Training days" suffix="per week" value={days} setValue={setDays} placeholder="3" /><SelectField label="Equipment" value={equipment} setValue={(value) => setEquipment(value as typeof equipment)} options={['none', 'dumbbells', 'gym']} /></div>
+          <div className="grid gap-2 sm:grid-cols-2">
+            <div className="rounded-2xl border border-electric-500/25 bg-electric-500/8 p-3.5"><p className="text-[10px] font-black uppercase tracking-[.15em] text-electric-300">Starting calorie target</p><p className="mt-1 text-2xl font-black text-slate-100">{suggestedCalories} <span className="text-sm font-semibold text-slate-400">kcal/day</span></p><p className="mt-1 text-xs text-slate-400">A transparent tracking estimate. You can edit it anytime.</p></div>
+            <div className="rounded-2xl border border-mint/25 bg-mint/8 p-3.5"><p className="text-[10px] font-black uppercase tracking-[.15em] text-mint">Starting protein target</p><p className="mt-1 text-2xl font-black text-slate-100">{suggestedProtein} <span className="text-sm font-semibold text-slate-400">g/day</span></p><p className="mt-1 text-xs text-slate-400">A planning target, not a diagnosis or prescription.</p></div>
+          </div>
         </div>}
 
         {step === 2 && <div className="space-y-5">

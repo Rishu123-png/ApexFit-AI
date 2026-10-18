@@ -90,6 +90,7 @@ export default function FoodScanPage() {
       const token = await getIdToken();
       const res = await fetch('/api/ai/food-scan', {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ image: dataUrl }),
       });
@@ -119,8 +120,13 @@ export default function FoodScanPage() {
         setNotice({ kind: 'error', text: 'The scan service is unavailable right now. Try again shortly.' });
         setState('preview');
       }
-    } catch {
-      setNotice({ kind: 'error', text: 'Network error while contacting the scan service.' });
+    } catch (err) {
+      setNotice({
+        kind: 'error',
+        text: err instanceof DOMException && err.name === 'TimeoutError'
+          ? 'Food analysis took too long. Check your connection, use a brighter photo, or try again.'
+          : 'Network error while contacting the scan service.',
+      });
       setState('preview');
     }
   }

@@ -54,6 +54,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const [completedSets, setCompletedSets] = useState<Record<string, number>>({});
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [arenaNote, setArenaNote] = useState('');
+  const [arenaStatus, setArenaStatus] = useState<'starting' | 'ready' | 'offline'>('starting');
   const [restLeftSec, setRestLeftSec] = useState<number | null>(null);
   const [restoredAgoMin, setRestoredAgoMin] = useState<number | null>(null);
   const startedAtRef = useRef(Date.now());
@@ -66,7 +67,11 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const beginArenaVerification = useCallback(async () => {
     const attempt = ++verificationAttemptRef.current;
     verificationSessionRef.current = null;
-    if (!user?.uid) return;
+    if (!user?.uid) {
+      setArenaStatus('offline');
+      return;
+    }
+    setArenaStatus('starting');
     try {
       const token = await getIdToken();
       const start = await arenaFetch<{ sessionId: string; startedAt: number }>(token, '/api/workouts/start', {
@@ -80,8 +85,10 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
       ) {
         verificationSessionRef.current = { id: start.sessionId, startedAt: start.startedAt };
         startedAtRef.current = start.startedAt;
+        setArenaStatus('ready');
       }
     } catch {
+      setArenaStatus('offline');
       // Saving remains available offline or without Admin credentials. Such a
       // session is deliberately private/self-reported and cannot earn XP.
     }
@@ -121,6 +128,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
       startedAtRef.current = s.startedAt;
       if (typeof s.verificationSessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(s.verificationSessionId)) {
         verificationSessionRef.current = { id: s.verificationSessionId, startedAt: s.startedAt };
+        setArenaStatus('ready');
       } else {
         void beginArenaVerification();
       }
@@ -339,6 +347,11 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-500">{plan.name}</p>
           <p className="font-mono text-3xl font-extrabold tabular-nums text-neon" aria-label="Session timer">
             {formatDuration(seconds)}
+          </p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Arena: <span className={arenaStatus === 'ready' ? 'text-mint' : arenaStatus === 'starting' ? 'text-amber' : 'text-slate-400'}>
+              {arenaStatus === 'ready' ? 'verification ready · XP eligible' : arenaStatus === 'starting' ? 'preparing verification…' : 'offline/self-reported · history still saves'}
+            </span>
           </p>
         </div>
         <div className="flex items-center gap-2">
