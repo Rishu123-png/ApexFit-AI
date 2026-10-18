@@ -3,7 +3,7 @@
 import { useRef, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
-import { addNutritionEntry } from '@/lib/db';
+import { addNutritionEntries } from '@/lib/db';
 import { claimArena } from '@/lib/arena/client';
 import { dateKey } from '@/lib/dates';
 import type { MealType } from '@/lib/types';
@@ -17,6 +17,13 @@ interface EditableItem extends VisionFoodItem {
   include: boolean;
 }
 
+const NUTRITION_LIMITS = {
+  calories: 3000,
+  protein: 300,
+  carbs: 600,
+  fat: 300,
+} as const;
+
 /** Downscale a photo before upload (slow-network friendly). */
 async function downscaleToDataUrl(file: File, maxDim = 1024, quality = 0.82): Promise<string> {
   const bmp = await createImageBitmap(file);
@@ -25,8 +32,12 @@ async function downscaleToDataUrl(file: File, maxDim = 1024, quality = 0.82): Pr
   canvas.width = Math.round(bmp.width * scale);
   canvas.height = Math.round(bmp.height * scale);
   const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Canvas unavailable');
+  if (!ctx) {
+    bmp.close();
+    throw new Error('Canvas unavailable');
+  }
   ctx.drawImage(bmp, 0, 0, canvas.width, canvas.height);
+  bmp.close();
   return canvas.toDataURL('image/jpeg', quality);
 }
 
@@ -124,21 +135,36 @@ export default function FoodScanPage() {
     setLogging(true);
     setNotice(null);
     try {
-      const today = dateKey();
-      for (const it of chosen) {
-        await addNutritionEntry(user.uid, today, {
-          name: it.name,
-          portionLabel: it.portionLabel,
-          meal,
-          servings: it.servings,
-          calories: it.calories,
-          protein: it.protein,
-          carbs: it.carbs,
-          fat: it.fat,
-          source: 'estimate',
-          loggedAt: Date.now(),
-        });
+      const invalid = chosen.some((it) =>
+        !it.name.trim() ||
+        it.name.length > 120 ||
+        it.portionLabel.length > 80 ||
+        !Number.isFinite(it.servings) || it.servings <= 0 || it.servings > 20 ||
+        !Number.isFinite(it.calories) || it.calories < 0 || it.calories > NUTRITION_LIMITS.calories ||
+        !Number.isFinite(it.protein) || it.protein < 0 || it.protein > NUTRITION_LIMITS.protein ||
+        !Number.isFinite(it.carbs) || it.carbs < 0 || it.carbs > NUTRITION_LIMITS.carbs ||
+        !Number.isFinite(it.fat) || it.fat < 0 || it.fat > NUTRITION_LIMITS.fat,
+      );
+      if (invalid) {
+        setNotice({ kind: 'error', text: 'Correct the item names, portions, servings, or macro values before logging.' });
+        return;
       }
+
+      const today = dateKey();
+      const loggedAt = Date.now();
+      // One RTDB update: either every selected item is logged or none are.
+      await addNutritionEntries(user.uid, today, chosen.map((it) => ({
+        name: it.name.trim(),
+        portionLabel: it.portionLabel.trim() || 'estimated portion',
+        meal,
+        servings: it.servings,
+        calories: it.calories,
+        protein: it.protein,
+        carbs: it.carbs,
+        fat: it.fat,
+        source: 'estimate',
+        loggedAt,
+      })));
       // Best-effort missions (server re-validates)
       try {
         const token = await getIdToken();
@@ -253,7 +279,8 @@ export default function FoodScanPage() {
                           value={it[k]}
                           onChange={(e) => {
                             const n = Number(e.target.value);
-                            if (Number.isFinite(n)) setItem(i, { [k]: Math.min(3000, Math.max(0, n)) } as Partial<EditableItem>);
+                            const max = NUTRITION_LIMITS[k];
+                            if (Number.isFinite(n)) setItem(i, { [k]: Math.min(max, Math.max(0, n)) } as Partial<EditableItem>);
                           }}
                         />
                       )}
