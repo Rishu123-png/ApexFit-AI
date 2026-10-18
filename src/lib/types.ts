@@ -8,6 +8,8 @@ export type TrainingFocus = 'full-body' | 'upper-body' | 'lower-body' | 'core' |
 /** Self-reported private profile data. The app never infers body type, body fat,
  * health status, or a future appearance from a camera. */
 export interface UserProfile {
+  /** Version of the persisted client data contract. Older records are migrated on read. */
+  schemaVersion?: number;
   displayName: string;
   email: string;
   createdAt: number;
@@ -32,6 +34,7 @@ export interface BodyMetric {
 }
 
 export interface Preferences {
+  schemaVersion?: number;
   calorieTarget: number;
   proteinTarget: number;
   waterTargetMl: number;
@@ -47,6 +50,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
 
 export interface NutritionEntry {
   id: string;
+  schemaVersion?: number;
   name: string;
   portionLabel: string;
   meal: MealType;
@@ -86,6 +90,7 @@ export interface SessionExercise {
 
 export interface WorkoutSession {
   id: string;
+  schemaVersion?: number;
   planId: string;
   planName: string;
   startedAt: number;
@@ -121,6 +126,21 @@ export interface WorkoutPlan {
   equipment: string;
   accent: string;
   exercises: Exercise[];
+}
+
+/** A reusable user-created meal/recipe. Nutrition values are always per serving. */
+export interface SavedRecipe {
+  id: string;
+  schemaVersion?: number;
+  name: string;
+  portionLabel: string;
+  defaultMeal: MealType;
+  calories: number;
+  protein: number;
+  carbs: number;
+  fat: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface FoodItem {
