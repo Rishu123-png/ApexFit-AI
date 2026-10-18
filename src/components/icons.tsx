@@ -140,3 +140,9 @@ export const IconShare = (p: P) => (
 export const IconCopy = (p: P) => (
   <svg {...base(p)}><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1" /></svg>
 );
+export const IconMessage = (p: P) => (
+  <svg {...base(p)}><path d="M20 11.5a7.5 7.5 0 0 1-8 7.48 8.2 8.2 0 0 1-3.1-.62L4 20l1.25-3.75A7.4 7.4 0 0 1 4.5 13 7.5 7.5 0 0 1 12 5.5h.5" /><path d="M15 3v5M12.5 5.5h5" /></svg>
+);
+export const IconSend = (p: P) => (
+  <svg {...base(p)}><path d="m21 3-7.5 18-3.2-7.3L3 10.5 21 3z" /><path d="m10.2 13.8 4.5-4.5" /></svg>
+);
