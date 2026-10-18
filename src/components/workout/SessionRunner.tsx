@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import { saveWorkoutSession } from '@/lib/db';
+import { flushQueuedWorkouts, makeLocalWorkoutId, queueWorkoutForSync } from '@/lib/offline/workoutQueue';
 import { claimArena, arenaFetch } from '@/lib/arena/client';
 import type { ArenaEventType } from '@/lib/arena/types';
 import { VoiceControl } from '@/components/voice/VoiceControl';
 import { ExerciseMotionGuide } from '@/components/workout/ExerciseMotionGuide';
 import { LiveFormCoach } from '@/components/workout/LiveFormCoach';
 import { formatDuration } from '@/lib/dates';
-import type { WorkoutPlan } from '@/lib/types';
+import type { WorkoutPlan, WorkoutSession } from '@/lib/types';
 import { Button, GlassCard, Badge, Alert } from '@/components/ui';
 import { IconPlay, IconPause, IconStop, IconCheck, IconChevronRight, IconInfo } from '@/components/icons';
 import { clsx } from '@/lib/clsx';
@@ -52,7 +53,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const [seconds, setSeconds] = useState(0);
   const [currentIdx, setCurrentIdx] = useState(0);
   const [completedSets, setCompletedSets] = useState<Record<string, number>>({});
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'queued' | 'error'>('idle');
   const [arenaNote, setArenaNote] = useState('');
   const [arenaStatus, setArenaStatus] = useState<'starting' | 'ready' | 'offline'>('starting');
   const [cameraGuidanceUsed, setCameraGuidanceUsed] = useState(false);
@@ -63,6 +64,10 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const finishingRef = useRef(false);
   const verificationSessionRef = useRef<{ id: string; startedAt: number } | null>(null);
   const verificationAttemptRef = useRef(0);
+  // Stable fallback id means an interrupted network write can be retried
+  // without duplicating a private workout in Firebase.
+  const localSessionIdRef = useRef<string | null>(null);
+  if (!localSessionIdRef.current) localSessionIdRef.current = makeLocalWorkoutId();
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const beginArenaVerification = useCallback(async () => {
@@ -171,6 +176,21 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
     } catch { /* ignore */ }
   }, [user?.uid, plan.id]);
 
+  // Completed workouts that could not reach Firebase are kept locally and
+  // retried on the next connection. This never runs Arena claims silently:
+  // a queued session remains private/self-reported until the member can review it.
+  useEffect(() => {
+    if (!user?.uid) return;
+    const sync = () => {
+      void flushQueuedWorkouts(user.uid).then(({ synced }) => {
+        if (synced > 0) setArenaNote(`${synced} offline workout${synced > 1 ? 's were' : ' was'} saved to your private history.`);
+      }).catch(() => undefined);
+    };
+    if (navigator.onLine) sync();
+    window.addEventListener('online', sync);
+    return () => window.removeEventListener('online', sync);
+  }, [user?.uid]);
+
   function discardRecovery() {
     clearStoredRun();
     setSeconds(0);
@@ -223,7 +243,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
       }));
       const fullyDone = exercises.filter((e) => e.completedSets >= e.targetSets).length;
       const status = fullyDone === exercises.length ? 'completed' : 'partial';
-      const sessionId = await saveWorkoutSession(user!.uid, {
+      const session: Omit<WorkoutSession, 'id'> = {
         planId: plan.id,
         planName: plan.name,
         startedAt: startedAtRef.current,
@@ -233,12 +253,40 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         status,
         cameraGuidanceUsed,
         exercises,
-      }, verificationSessionRef.current?.id);
+      };
+      const sessionId = verificationSessionRef.current?.id ?? localSessionIdRef.current!;
+      await saveWorkoutSession(user!.uid, session, sessionId);
       setSaveState('saved');
       clearStoredRun();
       void claimArenaRewards(sessionId, status);
     } catch {
-      setSaveState('error');
+      // Preserve the exact record with its stable id. It will retry when the
+      // browser comes online, even if the tab is closed now.
+      try {
+        const exercises = plan.exercises.map((e) => ({
+          exerciseId: e.id,
+          name: e.name,
+          targetSets: e.sets,
+          completedSets: completedSets[e.id] ?? 0,
+        }));
+        const status = exercises.every((e) => e.completedSets >= e.targetSets) ? 'completed' : 'partial';
+        const queuedSession: Omit<WorkoutSession, 'id'> = {
+          planId: plan.id,
+          planName: plan.name,
+          startedAt: startedAtRef.current,
+          endedAt,
+          durationSec: seconds,
+          totalSets,
+          status,
+          cameraGuidanceUsed,
+          exercises,
+        };
+        queueWorkoutForSync(user!.uid, verificationSessionRef.current?.id ?? localSessionIdRef.current!, queuedSession);
+        setSaveState('queued');
+        clearStoredRun();
+      } catch {
+        setSaveState('error');
+      }
     }
   }
 
@@ -329,6 +377,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         </ul>
         {saveState === 'saving' && <Alert kind="info">Saving session to your history…</Alert>}
         {saveState === 'saved' && <Alert kind="success">Saved to your workout history. Dashboard stats are updated.</Alert>}
+        {saveState === 'queued' && <Alert kind="warning">Saved securely on this device. We’ll add it to your private history when you are back online; no Arena XP is claimed in the background.</Alert>}
         {arenaNote && (
           <Alert kind="success" className="mt-3 border-neon/40 bg-neon/10 text-cyan-100">🏆 {arenaNote}</Alert>
         )}
