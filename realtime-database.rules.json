@@ -65,6 +65,15 @@
             "$other": { ".validate": true }
           }
         },
+        "bodyMetrics": {
+          "$metricId": {
+            ".validate": "newData.hasChildren(['weightKg', 'heightCm', 'recordedAt'])",
+            "weightKg": { ".validate": "newData.isNumber() && newData.val() >= 25 && newData.val() <= 350" },
+            "heightCm": { ".validate": "newData.isNumber() && newData.val() >= 100 && newData.val() <= 250" },
+            "recordedAt": { ".validate": "newData.isNumber()" },
+            "$other": { ".validate": false }
+          }
+        },
         "workouts": {
           "$workoutId": {
             ".validate": "newData.hasChildren(['planId', 'planName', 'startedAt', 'durationSec', 'totalSets', 'status']) && (!data.child('sealedAt').exists() || newData.val() === data.val())",
