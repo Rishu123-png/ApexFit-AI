@@ -2,14 +2,33 @@ export type MealType = 'breakfast' | 'lunch' | 'snacks' | 'dinner';
 
 export type DietaryPreference = 'veg' | 'non-veg' | 'eggetarian' | 'vegan';
 export type ExperienceLevel = 'beginner' | 'intermediate' | 'advanced';
+export type FitnessGoal = 'general-fitness' | 'strength' | 'fat-loss' | 'muscle-gain' | 'mobility';
+export type TrainingFocus = 'full-body' | 'upper-body' | 'lower-body' | 'core' | 'mobility' | 'conditioning';
 
+/** Self-reported private profile data. The app never infers body type, body fat,
+ * health status, or a future appearance from a camera. */
 export interface UserProfile {
   displayName: string;
   email: string;
   createdAt: number;
-  goal?: string;
+  goal?: FitnessGoal;
   experience?: ExperienceLevel;
   dietaryPreference?: DietaryPreference;
+  heightCm?: number;
+  weightKg?: number;
+  targetWeightKg?: number;
+  trainingDaysPerWeek?: number;
+  focusAreas?: TrainingFocus[];
+  equipmentAccess?: 'none' | 'dumbbells' | 'gym';
+  onboardingCompleted?: boolean;
+  /** User opted into a local camera framing check; no photo/video is stored. */
+  localBodyBaselineCheckedAt?: number;
+}
+
+export interface BodyMetric {
+  weightKg: number;
+  heightCm: number;
+  recordedAt: number;
 }
 
 export interface Preferences {
