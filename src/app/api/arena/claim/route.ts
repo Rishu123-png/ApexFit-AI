@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireArenaUser, isErrorResponse } from '@/lib/arena/http';
 import { awardXp } from '@/lib/arena/server';
-import { isValidEventType, isValidTimeZone } from '@/lib/arena/validate';
+import { isValidEventType } from '@/lib/arena/validate';
 import { checkRateLimit } from '@/lib/ai/ratelimit';
 
 export const runtime = 'nodejs';
@@ -39,10 +39,11 @@ export async function POST(req: NextRequest) {
 
   const sourceId =
     typeof body.sourceId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(body.sourceId) ? body.sourceId : undefined;
-  const tz = typeof body.tz === 'string' && isValidTimeZone(body.tz) ? body.tz : 'Asia/Kolkata';
 
   try {
-    const result = await awardXp({ uid, tz, type: body.type, sourceId });
+    // awardXp loads the server-stored Arena timezone; callers cannot choose
+    // different day/week keys per request.
+    const result = await awardXp({ uid, type: body.type, sourceId });
     const status =
       result.status === 'awarded' ? 200
       : result.status === 'already_awarded' ? 200 // benign idempotent response
