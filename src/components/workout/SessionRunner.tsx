@@ -15,9 +15,13 @@ import { clsx } from '@/lib/clsx';
 type Phase = 'running' | 'paused' | 'finished';
 
 // ── Recoverable in-progress session (localStorage, per user+plan, 12h window) ─
-const SESSION_STORE_VER = 1;
+const SESSION_STORE_VER = 3;
 interface StoredRun {
   v: number;
+  /** Server-issued ID when this run is eligible for an Arena verification. */
+  verificationSessionId?: string;
+  /** Original start time; server time is used whenever an Arena start exists. */
+  startedAt: number;
   seconds: number;
   currentIdx: number;
   completedSets: Record<string, number>;
@@ -32,6 +36,7 @@ function loadStoredRun(uid: string, planId: string): StoredRun | null {
     if (!raw) return null;
     const s = JSON.parse(raw) as StoredRun;
     if (s.v !== SESSION_STORE_VER || typeof s.completedSets !== 'object' || s.completedSets === null) return null;
+    if (!Number.isFinite(s.startedAt) || s.startedAt > Date.now() + 60_000) return null;
     if (Date.now() - s.savedAt > 12 * 60 * 60 * 1000) return null;
     return s;
   } catch {
@@ -51,7 +56,34 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const [restoredAgoMin, setRestoredAgoMin] = useState<number | null>(null);
   const startedAtRef = useRef(Date.now());
   const restoredRef = useRef(false);
+  const finishingRef = useRef(false);
+  const verificationSessionRef = useRef<{ id: string; startedAt: number } | null>(null);
+  const verificationAttemptRef = useRef(0);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const beginArenaVerification = useCallback(async () => {
+    const attempt = ++verificationAttemptRef.current;
+    verificationSessionRef.current = null;
+    if (!user?.uid) return;
+    try {
+      const token = await getIdToken();
+      const start = await arenaFetch<{ sessionId: string; startedAt: number }>(token, '/api/workouts/start', {
+        method: 'POST',
+        body: { planId: plan.id },
+      });
+      if (
+        verificationAttemptRef.current === attempt &&
+        typeof start.sessionId === 'string' &&
+        Number.isFinite(start.startedAt)
+      ) {
+        verificationSessionRef.current = { id: start.sessionId, startedAt: start.startedAt };
+        startedAtRef.current = start.startedAt;
+      }
+    } catch {
+      // Saving remains available offline or without Admin credentials. Such a
+      // session is deliberately private/self-reported and cannot earn XP.
+    }
+  }, [getIdToken, plan.id, user?.uid]);
 
   const current = plan.exercises[currentIdx];
   const next = plan.exercises[currentIdx + 1] ?? null;
@@ -84,14 +116,22 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
     restoredRef.current = true;
     const s = loadStoredRun(user.uid, plan.id);
     if (s && Object.values(s.completedSets).some((n) => n > 0)) {
+      startedAtRef.current = s.startedAt;
+      if (typeof s.verificationSessionId === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(s.verificationSessionId)) {
+        verificationSessionRef.current = { id: s.verificationSessionId, startedAt: s.startedAt };
+      } else {
+        void beginArenaVerification();
+      }
       setSeconds(s.seconds);
       setCurrentIdx(Math.min(s.currentIdx, plan.exercises.length - 1));
       setCompletedSets(s.completedSets);
       setRestLeftSec(s.restLeftSec ?? null);
       if (s.paused) setPhase('paused');
       setRestoredAgoMin(Math.max(1, Math.round((Date.now() - s.savedAt) / 60000)));
+    } else {
+      void beginArenaVerification();
     }
-  }, [user?.uid, plan.id, plan.exercises.length]);
+  }, [beginArenaVerification, user?.uid, plan.id, plan.exercises.length]);
 
   // ── Autosave progress (crash/close-safe) ──
   useEffect(() => {
@@ -101,6 +141,8 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         runKey(user.uid, plan.id),
         JSON.stringify({
           v: SESSION_STORE_VER,
+          verificationSessionId: verificationSessionRef.current?.id,
+          startedAt: startedAtRef.current,
           seconds,
           currentIdx,
           completedSets,
@@ -126,7 +168,8 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
     setRestLeftSec(null);
     setPhase('running');
     setRestoredAgoMin(null);
-    startedAtRef.current = Date.now() - 0;
+    startedAtRef.current = Date.now();
+    void beginArenaVerification();
   }
 
   const doneSets = current ? (completedSets[current.id] ?? 0) : 0;
@@ -153,6 +196,10 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const resumeSession = useCallback(() => setPhase('running'), []);
 
   async function finish() {
+    // React state updates are asynchronous; this synchronous guard prevents
+    // double-taps or a voice confirmation from creating duplicate sessions.
+    if (finishingRef.current || phase === 'finished' || !user) return;
+    finishingRef.current = true;
     setPhase('finished');
     const endedAt = Date.now();
     setSaveState('saving');
@@ -174,7 +221,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         totalSets,
         status,
         exercises,
-      });
+      }, verificationSessionRef.current?.id);
       setSaveState('saved');
       clearStoredRun();
       void claimArenaRewards(sessionId, status);
