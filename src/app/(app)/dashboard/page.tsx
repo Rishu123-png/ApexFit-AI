@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { motion, useReducedMotion } from 'framer-motion';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import {
@@ -17,13 +18,12 @@ import { GlassCard, SectionTitle, Badge, Button, EmptyState, Spinner } from '@/c
 import { ProgressRing, MiniBars, MacroBar } from '@/components/charts';
 import { CoachPanel } from '@/components/dashboard/CoachPanel';
 import { WORKOUT_PLANS } from '@/lib/data/plans';
-import { arenaFetch, type ArenaProfileResponse } from '@/lib/arena/client';
 import {
-  IconPlay, IconPlus, IconDroplet, IconFlame, IconDumbbell, IconBowl, IconClock, IconSparkles, IconCamera, IconTrophy,
+  IconPlay, IconPlus, IconDroplet, IconFlame, IconDumbbell, IconBowl, IconClock, IconSparkles, IconCamera,
 } from '@/components/icons';
 
 export default function DashboardPage() {
-  const { user, getIdToken } = useAuth();
+  const { user } = useAuth();
   const uid = user!.uid;
   const today = dateKey();
 
@@ -34,26 +34,8 @@ export default function DashboardPage() {
   const [recent, setRecent] = useState<WorkoutSession[] | null>(null);
   const [waterBusy, setWaterBusy] = useState(false);
   const [waterFlash, setWaterFlash] = useState('');
-  const [arena, setArena] = useState<ArenaProfileResponse | null>(null);
   const coachRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    // Arena snapshot for the coach context + arena strip — silent if the
-    // server isn't configured or the user isn't a participant.
-    let cancelled = false;
-    void (async () => {
-      try {
-        const token = await getIdToken();
-        const data = await arenaFetch<ArenaProfileResponse>(token, '/api/arena/profile');
-        if (!cancelled && data.participant) setArena(data);
-      } catch {
-        /* not configured / offline — dashboard works without it */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [getIdToken]);
+  const reducedMotion = useReducedMotion();
 
   useEffect(() => subscribePreferences(uid, setPrefs), [uid]);
   useEffect(() => subscribeNutritionDay(uid, today, setMeals), [uid, today]);
@@ -99,29 +81,53 @@ export default function DashboardPage() {
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-electric-400">{friendlyDate()}</p>
-          <h1 className="mt-1 text-2xl font-extrabold tracking-tight sm:text-3xl">
-            Namaste, <span className="neon-text">{firstName}</span>
-          </h1>
+    <div className="space-y-5">
+      {/* Command-centre hero: emphasis is on one clear next action, not another generic dashboard header. */}
+      <motion.section
+        initial={reducedMotion ? false : { opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ type: 'spring', stiffness: 240, damping: 25 }}
+        className="relative overflow-hidden rounded-[1.8rem] border border-electric-500/20 bg-[linear-gradient(135deg,rgba(14,31,74,0.9),rgba(8,13,29,0.92)_54%,rgba(12,42,67,0.66))] p-5 shadow-[0_18px_54px_rgba(0,0,0,0.22)] sm:p-7"
+      >
+        <div className="pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-electric-500/20 blur-3xl" aria-hidden="true" />
+        <div className="pointer-events-none absolute bottom-0 right-[18%] h-40 w-40 rounded-full bg-neon/10 blur-3xl" aria-hidden="true" />
+        <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="text-[10px] font-black uppercase tracking-[0.2em] text-electric-300">{friendlyDate()}</p>
+              <span className="h-1 w-1 rounded-full bg-neon" aria-hidden="true" />
+              <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-400">Daily command centre</span>
+            </div>
+            <h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">
+              Namaste, <span className="neon-text">{firstName}</span>
+            </h1>
+            <p className="mt-2 max-w-xl text-sm leading-relaxed text-slate-300">
+              Your training, fuel and recovery in one focused view. Build the next strong day with one deliberate action.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Badge tone="blue"><IconSparkles width={12} /> System online</Badge>
+            <Badge tone={trainedToday ? 'green' : 'amber'}>{trainedToday ? 'Training logged' : 'Session waiting'}</Badge>
+          </div>
         </div>
-        <Badge tone="blue"><IconSparkles width={12} /> System online</Badge>
-      </div>
+      </motion.section>
 
-      {/* Quick actions */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <Link href="/workouts"><Button glow className="w-full"><IconPlay width={15} /> Start workout</Button></Link>
-        <Link href="/nutrition?add=1"><Button variant="outline" className="w-full"><IconPlus width={15} /> Add meal</Button></Link>
-        <Button variant="outline" className="w-full" onClick={() => quickWater(250)} loading={waterBusy}>
+      {/* High-frequency actions stay above the fold on every viewport. */}
+      <motion.div
+        initial={reducedMotion ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: reducedMotion ? 0 : 0.05, type: 'spring', stiffness: 260, damping: 24 }}
+        className="grid grid-cols-2 gap-2.5 sm:grid-cols-4"
+      >
+        <Link href="/workouts"><Button glow className="h-full w-full"><IconPlay width={15} /> Start workout</Button></Link>
+        <Link href="/nutrition?add=1"><Button variant="outline" className="h-full w-full"><IconPlus width={15} /> Add meal</Button></Link>
+        <Button variant="outline" className="h-full w-full" onClick={() => quickWater(250)} loading={waterBusy}>
           <IconDroplet width={15} /> +250 ml
         </Button>
-        <Button variant="outline" className="w-full" onClick={() => coachRef.current?.scrollIntoView({ behavior: 'smooth' })}>
+        <Button variant="outline" className="h-full w-full" onClick={() => coachRef.current?.scrollIntoView({ behavior: 'smooth' })}>
           <IconSparkles width={15} /> Ask AI
         </Button>
-      </div>
+      </motion.div>
 
       {loadingCore ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -312,33 +318,10 @@ export default function DashboardPage() {
                 workoutsThisWeek: week!.length,
                 calorieTarget: prefs.calorieTarget,
                 proteinTarget: prefs.proteinTarget,
-                streakDays: arena?.streakDays,
               }}
             />
           </div>
 
-          {/* Arena strip */}
-          <GlassCard hover className="flex flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-amber/30 bg-amber/10 text-amber"><IconTrophy width={20} /></div>
-              <div>
-                <p className="font-bold">
-                  Apex Arena{' '}
-                  {arena?.lifetime ? (
-                    <Badge tone="violet">LV {arena.lifetime.level} · {arena.lifetime.xp.toLocaleString('en-IN')} XP</Badge>
-                  ) : (
-                    <Badge tone="blue">Optional</Badge>
-                  )}
-                </p>
-                <p className="text-sm text-slate-400">
-                  {arena?.lifetime
-                    ? `${arena.streakDays ?? 0}-day streak · ${arena.period?.weekXp ?? 0} XP this week — keep climbing.`
-                    : 'Compete with friends on XP and streaks — by opt-in only, with privacy-first controls.'}
-                </p>
-              </div>
-            </div>
-            <Link href="/arena"><Button variant="outline">{arena?.lifetime ? 'Open Arena' : 'Explore Arena'}</Button></Link>
-          </GlassCard>
 
           {/* Vision teaser */}
           <GlassCard hover className="flex flex-wrap items-center justify-between gap-4">
