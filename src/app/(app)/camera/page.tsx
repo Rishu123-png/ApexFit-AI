@@ -25,9 +25,11 @@ export default function CameraWorkoutPage() {
   const counterRef = useRef<AngleRepCounter>(new AngleRepCounter(TRACKABLE_EXERCISES[0].counter));
   const rafRef = useRef<number>(0);
   const lastDrawRef = useRef<PoseFrame | null>(null);
+  const lastUiUpdateRef = useRef(0);
 
   const [state, setState] = useState<CameraState>('idle');
   const [engine, setEngine] = useState<EngineState>({ kind: 'idle' });
+  const [videoReady, setVideoReady] = useState(false);
   const [tracking, setTracking] = useState(false);
   const [exercise, setExercise] = useState<TrackableExercise>(TRACKABLE_EXERCISES[0]);
   const [reps, setReps] = useState(0);
@@ -61,14 +63,20 @@ export default function CameraWorkoutPage() {
     const { angle, visible } =
       exercise.kind === 'knee' ? kneeAngle(frame.landmarks) : elbowAngle(frame.landmarks);
     const vis = keyJointsVisibility(frame.landmarks, TRACK_JOINTS);
-    setVisibility(vis);
     const ev = counterRef.current.feed(angle, vis, frame.timestampMs);
-    setPhase(counterRef.current.currentPhase);
-    if (ev) {
-      setReps(ev.count);
-      setQuality(ev.quality);
-    } else if (!visible) {
-      setQuality(null);
+
+    // MediaPipe is already throttled to ~12 fps. Limit React updates further so
+    // the camera preview stays responsive on lower-end phones.
+    if (frame.timestampMs - lastUiUpdateRef.current >= 150 || ev) {
+      lastUiUpdateRef.current = frame.timestampMs;
+      setVisibility(vis);
+      setPhase(counterRef.current.currentPhase);
+      if (ev) {
+        setReps(ev.count);
+        setQuality(ev.quality);
+      } else if (!visible) {
+        setQuality(null);
+      }
     }
   }
 
@@ -94,17 +102,46 @@ export default function CameraWorkoutPage() {
     rafRef.current = requestAnimationFrame(loop);
   }
 
+  async function waitForUsableVideo(video: HTMLVideoElement): Promise<void> {
+    await video.play();
+    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth > 0) return;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => finish(new Error('Camera did not provide video frames.')), 8_000);
+      const onReady = () => {
+        if (video.videoWidth > 0) finish();
+      };
+      const finish = (err?: Error) => {
+        window.clearTimeout(timeout);
+        video.removeEventListener('loadedmetadata', onReady);
+        video.removeEventListener('canplay', onReady);
+        if (err) reject(err);
+        else resolve();
+      };
+      video.addEventListener('loadedmetadata', onReady);
+      video.addEventListener('canplay', onReady);
+    });
+  }
+
   async function startCamera() {
     if (!('mediaDevices' in navigator) || !navigator.mediaDevices.getUserMedia) {
       setState('unsupported');
       return;
     }
+
+    stopLoop();
+    stopStream();
+    engineRef.current?.dispose();
+    engineRef.current = null;
+    setTracking(false);
+    setVideoReady(false);
     setState('requesting');
+
     // Engine model loads in parallel with the permission prompt.
     const eng = createPoseEngine();
     engineRef.current = eng;
     setEngine({ kind: 'loading' });
-    eng.load()
+    void eng.load()
       .then(() => {
         if (engineRef.current === eng) setEngine({ kind: 'ready' });
       })
@@ -118,21 +155,45 @@ export default function CameraWorkoutPage() {
         audio: false,
       });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play().catch(() => undefined);
-      }
+      const track = stream.getVideoTracks()[0];
+      if (!track) throw new Error('No video track was returned by the camera.');
+      track.onended = () => {
+        if (streamRef.current === stream) {
+          stopTracking();
+          setVideoReady(false);
+          setState('error');
+        }
+      };
+      track.onmute = () => {
+        if (streamRef.current === stream) {
+          stopTracking();
+          setVideoReady(false);
+        }
+      };
+      track.onunmute = () => {
+        if (streamRef.current === stream && videoRef.current?.videoWidth) setVideoReady(true);
+      };
+
+      const video = videoRef.current;
+      if (!video) throw new Error('Camera preview is unavailable.');
+      video.srcObject = stream;
+      await waitForUsableVideo(video);
+      if (streamRef.current !== stream) return;
+      setVideoReady(true);
       setState('active');
     } catch (err) {
+      stopStream();
       const name = err instanceof DOMException ? err.name : '';
       setState(name === 'NotAllowedError' || name === 'SecurityError' ? 'denied' : 'error');
     }
   }
 
   function startTracking() {
-    engineRef.current?.onResults(onFrame);
+    if (!videoReady || !engineRef.current) return;
+    engineRef.current.onResults(onFrame);
     stopLoop();
     lastDrawRef.current = null;
+    lastUiUpdateRef.current = 0;
     counterRef.current = new AngleRepCounter(exercise.counter);
     setReps(0);
     setQuality(null);
@@ -166,6 +227,11 @@ export default function CameraWorkoutPage() {
   function stopCamera() {
     stopTracking();
     stopStream();
+    engineRef.current?.dispose();
+    engineRef.current = null;
+    lastDrawRef.current = null;
+    setVideoReady(false);
+    setEngine({ kind: 'idle' });
     setState('idle');
   }
 
@@ -249,9 +315,11 @@ export default function CameraWorkoutPage() {
                     {quality === 'good' ? 'good rep' : quality === 'shallow' ? 'go a bit deeper' : 'slow down'}
                   </Badge>
                 )}
-                {visibility < 0.6 && (
+                {!videoReady ? (
+                  <Badge tone="amber">waiting for camera frames</Badge>
+                ) : visibility < 0.6 ? (
                   <Badge tone="amber">step back — joints not fully visible</Badge>
-                )}
+                ) : null}
               </div>
             )}
           </div>
@@ -282,7 +350,9 @@ export default function CameraWorkoutPage() {
           <div className="flex gap-2">
             {engine.kind === 'ready' ? (
               !tracking ? (
-                <Button glow onClick={startTracking} className="flex-1 py-3"><IconPlay width={15} /> Start rep counting</Button>
+                <Button glow onClick={startTracking} disabled={!videoReady} className="flex-1 py-3">
+                  <IconPlay width={15} /> {videoReady ? 'Start rep counting' : 'Waiting for camera frames…'}
+                </Button>
               ) : (
                 <>
                   <Button variant="danger" onClick={stopTracking} className="flex-1 py-3"><IconStop width={15} /> Stop tracking</Button>
@@ -292,7 +362,23 @@ export default function CameraWorkoutPage() {
             ) : engine.kind === 'loading' ? (
               <Button disabled className="flex-1 py-3">Model loading…</Button>
             ) : (
-              <Button variant="outline" onClick={() => { setEngine({ kind: 'loading' }); engineRef.current = createPoseEngine(); engineRef.current.load().then(() => setEngine({ kind: 'ready' })).catch((e: Error) => setEngine({ kind: 'failed', reason: e.message })); }} className="flex-1 py-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  engineRef.current?.dispose();
+                  const next = createPoseEngine();
+                  engineRef.current = next;
+                  setEngine({ kind: 'loading' });
+                  void next.load()
+                    .then(() => {
+                      if (engineRef.current === next) setEngine({ kind: 'ready' });
+                    })
+                    .catch((e: Error) => {
+                      if (engineRef.current === next) setEngine({ kind: 'failed', reason: e.message });
+                    });
+                }}
+                className="flex-1 py-3"
+              >
                 <IconRefresh width={15} /> Retry model load
               </Button>
             )}
