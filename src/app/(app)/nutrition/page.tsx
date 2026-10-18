@@ -275,7 +275,7 @@ function NutritionInner() {
                   +{ml}
                 </Button>
               ))}
-              <Button variant="ghost" className="px-2 py-1.5 text-xs" onClick={() => quickWater(-250)} disabled={waterBusy || waterMl <= 0} aria-label="Undo 250 ml">
+              <Button variant="ghost" className="px-2 py-1.5 text-xs" onClick={() => quickWater(-250)} disabled={waterBusy || waterMl < 250} aria-label="Undo 250 ml">
                 −250
               </Button>
             </div>
