@@ -60,14 +60,20 @@ describe('validateSessionSeal — fraud rejection', () => {
     expect(validateSessionSeal(base({ startedAt: Infinity })).ok).toBe(false);
   });
 
-  it('tolerates the small grace window (timer vs clock skew)', () => {
-    // durationSec (35 min + 4 min) vs elapsed 35 min → within 5-min grace
+  it('tolerates only the short server-timed UI/network grace window', () => {
+    // 35 min elapsed + 60 sec is inside the 90-sec allowance.
     const r = validateSessionSeal(base({
       startedAt: NOW - 35 * 60_000,
       endedAt: NOW,
-      durationSec: 39 * 60,
+      durationSec: 36 * 60,
     }));
     expect(r.ok).toBe(true);
+    // The old five-minute window made it too easy to complete instantly.
+    expect(validateSessionSeal(base({
+      startedAt: NOW - 35 * 60_000,
+      endedAt: NOW,
+      durationSec: 37 * 60,
+    })).ok).toBe(false);
   });
 });
 
