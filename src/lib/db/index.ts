@@ -19,6 +19,7 @@ import type {
   Preferences,
   UserProfile,
   WorkoutSession,
+  BodyMetric,
 } from '@/lib/types';
 import { DEFAULT_PREFERENCES } from '@/lib/types';
 import { daysAgoTs } from '@/lib/dates';
@@ -81,6 +82,27 @@ export function updateProfileFields(
   fields: Partial<UserProfile>,
 ): Promise<void> {
   return update(userRef(uid, 'profile'), fields);
+}
+
+/** Store a self-reported check-in only. Camera frames/photos are never written. */
+export async function saveBodyMetric(uid: string, metric: Omit<BodyMetric, 'recordedAt'>): Promise<void> {
+  const recordedAt = Date.now();
+  await set(userRef(uid, `bodyMetrics/${recordedAt}`), { ...metric, recordedAt } satisfies BodyMetric);
+}
+
+export function subscribeBodyMetrics(
+  uid: string,
+  cb: (metrics: BodyMetric[]) => void,
+): Unsubscribe {
+  const q = query(userRef(uid, 'bodyMetrics'), orderByChild('recordedAt'), limitToLast(60));
+  return onValue(q, (snapshot) => {
+    if (!snapshot.exists()) return cb([]);
+    cb(
+      Object.values(snapshot.val() as Record<string, BodyMetric>)
+        .filter((value) => Number.isFinite(value.weightKg) && Number.isFinite(value.heightCm) && Number.isFinite(value.recordedAt))
+        .sort((a, b) => a.recordedAt - b.recordedAt),
+    );
+  });
 }
 
 // ── Nutrition ────────────────────────────────────────────────────────────────
