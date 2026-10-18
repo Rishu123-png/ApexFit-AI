@@ -127,3 +127,19 @@ export const TRACKABLE_EXERCISES: TrackableExercise[] = [
     cue: 'Side view shows the front knee best. Step, dip under control, return upright.',
   },
 ];
+
+/** Map the shipped workout exercise IDs to the conservative pose counters.
+ * Unmapped exercises intentionally receive no automated judgement. */
+const WORKOUT_TO_TRACKABLE: Record<string, TrackableExercise['id']> = {
+  squat: 'squat',
+  'goblet-squat': 'squat',
+  'knee-pushup': 'pushup',
+  pushup: 'pushup',
+  lunge: 'lunge',
+  'reverse-lunge': 'lunge',
+};
+
+export function trackableForWorkoutExercise(exerciseId: string): TrackableExercise | null {
+  const trackableId = WORKOUT_TO_TRACKABLE[exerciseId];
+  return TRACKABLE_EXERCISES.find((exercise) => exercise.id === trackableId) ?? null;
+}
