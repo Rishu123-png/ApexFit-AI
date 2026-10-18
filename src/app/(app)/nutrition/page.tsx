@@ -7,11 +7,14 @@ import { useAuth } from '@/lib/auth/AuthProvider';
 import { FOODS, FOOD_CATEGORIES } from '@/lib/data/foods';
 import {
   addNutritionEntry,
+  addNutritionEntryWithRecipe,
   updateNutritionEntry,
   deleteNutritionEntry,
+  deleteRecipe,
   subscribeNutritionDay,
   subscribeHydration,
   subscribePreferences,
+  subscribeSavedRecipes,
   savePreferences,
   logWater,
 } from '@/lib/db';
@@ -25,6 +28,7 @@ import {
   type MealType,
   type NutritionEntry,
   type Preferences,
+  type SavedRecipe,
 } from '@/lib/types';
 import { GlassCard, SectionTitle, Badge, Button, Field, Alert, EmptyState } from '@/components/ui';
 import { MacroBar, ProgressRing } from '@/components/charts';
@@ -48,13 +52,18 @@ function NutritionInner() {
   const [entries, setEntries] = useState<NutritionEntry[] | null>(null);
   const [prefs, setPrefs] = useState<Preferences>(DEFAULT_PREFERENCES);
   const [waterMl, setWaterMl] = useState(0);
+  const [savedRecipes, setSavedRecipes] = useState<SavedRecipe[]>([]);
 
   // Add/Edit form state
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [selectedFood, setSelectedFood] = useState<FoodItem | null>(null);
+  const [selectedRecipe, setSelectedRecipe] = useState<SavedRecipe | null>(null);
   const [customMode, setCustomMode] = useState(false);
+  const [savedMode, setSavedMode] = useState(false);
+  const [saveAsRecipe, setSaveAsRecipe] = useState(false);
+  const [recipeLabel, setRecipeLabel] = useState('');
   const [meal, setMeal] = useState<MealType>('breakfast');
   const [servings, setServings] = useState('1');
   const [cName, setCName] = useState('');
@@ -73,6 +82,7 @@ function NutritionInner() {
 
   useEffect(() => subscribeNutritionDay(uid, today, setEntries, () => { setEntries([]); setHistoryOffline(true); }), [uid, today]);
   useEffect(() => subscribePreferences(uid, setPrefs, () => setHistoryOffline(true)), [uid]);
+  useEffect(() => subscribeSavedRecipes(uid, setSavedRecipes, () => setHistoryOffline(true)), [uid]);
   useEffect(() => subscribeHydration(uid, today, setWaterMl, () => setHistoryOffline(true)), [uid, today]);
   useEffect(() => {
     if (entries !== null) return;
@@ -110,7 +120,11 @@ function NutritionInner() {
       setServings(String(entry.servings));
       const food = FOODS.find((f) => f.name === entry.name);
       setSelectedFood(food ?? null);
+      setSelectedRecipe(null);
+      setSavedMode(false);
       setCustomMode(!food);
+      setSaveAsRecipe(false);
+      setRecipeLabel('');
       setCName(entry.name);
       setCCals(String(entry.calories));
       setCProtein(String(entry.protein));
@@ -119,7 +133,11 @@ function NutritionInner() {
     } else {
       setEditingId(null);
       setSelectedFood(null);
+      setSelectedRecipe(null);
       setCustomMode(false);
+      setSavedMode(false);
+      setSaveAsRecipe(false);
+      setRecipeLabel('');
       setServings('1');
       setCName('');
       setCCals('');
@@ -146,6 +164,7 @@ function NutritionInner() {
     if (customMode) {
       const nums = [cCals, cProtein, cCarbs, cFat].map(Number);
       if (!cName.trim() || cName.trim().length > 120) return setFormError('Enter a food name (max 120 chars).');
+      if (!recipeLabel.trim() && saveAsRecipe) return setFormError('Give this saved recipe a name.');
       if (nums.some((n) => !Number.isFinite(n) || n < 0)) return setFormError('Nutrition values must be valid non-negative numbers.');
       if (nums[0] > 3000 || nums.some((n) => n > 600)) return setFormError('One or more values are implausibly high for a single portion.');
       payload = {
@@ -160,8 +179,22 @@ function NutritionInner() {
         source: 'custom',
         loggedAt: Date.now(),
       };
+    } else if (savedMode) {
+      if (!selectedRecipe) return setFormError('Choose a saved recipe, or switch to a custom entry.');
+      payload = {
+        name: selectedRecipe.name,
+        portionLabel: selectedRecipe.portionLabel,
+        meal,
+        servings: qty,
+        calories: selectedRecipe.calories,
+        protein: selectedRecipe.protein,
+        carbs: selectedRecipe.carbs,
+        fat: selectedRecipe.fat,
+        source: 'custom',
+        loggedAt: Date.now(),
+      };
     } else {
-      if (!selectedFood) return setFormError('Pick a food from the list, or switch to custom entry.');
+      if (!selectedFood) return setFormError('Pick a food from the list, a saved recipe, or switch to custom entry.');
       payload = {
         name: selectedFood.name,
         portionLabel: selectedFood.portionLabel,
@@ -178,8 +211,21 @@ function NutritionInner() {
     setSaving(true);
     setFormError('');
     try {
-      if (editingId) await updateNutritionEntry(uid, today, editingId, payload);
-      else await addNutritionEntry(uid, today, payload);
+      if (editingId) {
+        await updateNutritionEntry(uid, today, editingId, payload);
+      } else if (customMode && saveAsRecipe) {
+        await addNutritionEntryWithRecipe(uid, today, payload, {
+          name: recipeLabel.trim(),
+          portionLabel: payload.portionLabel,
+          defaultMeal: meal,
+          calories: payload.calories,
+          protein: payload.protein,
+          carbs: payload.carbs,
+          fat: payload.fat,
+        });
+      } else {
+        await addNutritionEntry(uid, today, payload);
+      }
       closeForm();
       void claimArenaXP();
     } catch {
@@ -206,6 +252,15 @@ function NutritionInner() {
       await deleteNutritionEntry(uid, today, id);
     } catch {
       setFormError('Couldn’t delete that entry.');
+    }
+  }
+
+  async function removeRecipe(id: string) {
+    try {
+      await deleteRecipe(uid, id);
+      if (selectedRecipe?.id === id) setSelectedRecipe(null);
+    } catch {
+      setFormError('Couldn’t delete that saved recipe.');
     }
   }
 
@@ -306,16 +361,24 @@ function NutritionInner() {
             <div className="flex gap-1 rounded-xl bg-white/5 p-1" role="tablist" aria-label="Entry mode">
               <button
                 role="tab"
-                aria-selected={!customMode}
-                onClick={() => setCustomMode(false)}
-                className={clsx('rounded-lg px-3 py-1.5 text-xs font-semibold transition', !customMode ? 'bg-electric-600 text-white' : 'text-slate-400')}
+                aria-selected={!customMode && !savedMode}
+                onClick={() => { setCustomMode(false); setSavedMode(false); setSelectedRecipe(null); }}
+                className={clsx('rounded-lg px-3 py-1.5 text-xs font-semibold transition', !customMode && !savedMode ? 'bg-electric-600 text-white' : 'text-slate-400')}
               >
                 Database
               </button>
               <button
                 role="tab"
+                aria-selected={savedMode}
+                onClick={() => { setCustomMode(false); setSavedMode(true); setSelectedFood(null); }}
+                className={clsx('rounded-lg px-3 py-1.5 text-xs font-semibold transition', savedMode ? 'bg-electric-600 text-white' : 'text-slate-400')}
+              >
+                Saved
+              </button>
+              <button
+                role="tab"
                 aria-selected={customMode}
-                onClick={() => setCustomMode(true)}
+                onClick={() => { setCustomMode(true); setSavedMode(false); setSelectedRecipe(null); }}
                 className={clsx('rounded-lg px-3 py-1.5 text-xs font-semibold transition', customMode ? 'bg-electric-600 text-white' : 'text-slate-400')}
               >
                 Custom
@@ -323,7 +386,7 @@ function NutritionInner() {
             </div>
           </div>
 
-          {!customMode ? (
+          {!customMode && !savedMode ? (
             <>
               <div>
                 <label htmlFor="food-search" className="sr-only">Search foods</label>
@@ -370,6 +433,25 @@ function NutritionInner() {
                 })}
               </div>
             </>
+          ) : savedMode ? (
+            <div className="space-y-2" role="listbox" aria-label="Saved recipes">
+              {savedRecipes.length === 0 ? (
+                <p className="rounded-xl border border-dashed border-white/15 px-3 py-4 text-sm text-slate-400">No saved recipes yet. Add a custom dish and choose “Save as reusable recipe” to log it faster next time.</p>
+              ) : savedRecipes.map((recipe) => (
+                <div key={recipe.id} className={clsx('flex items-center gap-2 rounded-xl border px-3 py-2.5', selectedRecipe?.id === recipe.id ? 'border-electric-400/70 bg-electric-500/15' : 'border-white/8 bg-white/[.02]')}>
+                  <button
+                    role="option"
+                    aria-selected={selectedRecipe?.id === recipe.id}
+                    onClick={() => { setSelectedRecipe(recipe); setMeal(recipe.defaultMeal); }}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <span className="block truncate text-sm font-semibold">{recipe.name}</span>
+                    <span className="block text-xs text-slate-500">{recipe.portionLabel} · {recipe.calories} kcal · {recipe.protein}g protein</span>
+                  </button>
+                  <button onClick={() => void removeRecipe(recipe.id)} aria-label={`Delete saved recipe ${recipe.name}`} className="rounded-lg px-2 py-1 text-xs text-slate-400 hover:bg-white/10 hover:text-coral">Delete</button>
+                </div>
+              ))}
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-3">
               <div className="col-span-2"><Field label="Food name" value={cName} onChange={(e) => setCName(e.target.value)} placeholder="e.g. Grandma’s upma" /></div>
@@ -377,7 +459,14 @@ function NutritionInner() {
               <Field label="Protein (g)" inputMode="decimal" value={cProtein} onChange={(e) => setCProtein(e.target.value)} placeholder="8" />
               <Field label="Carbs (g)" inputMode="decimal" value={cCarbs} onChange={(e) => setCCarbs(e.target.value)} placeholder="35" />
               <Field label="Fat (g)" inputMode="decimal" value={cFat} onChange={(e) => setCFat(e.target.value)} placeholder="9" />
-              <p className="col-span-2 text-xs text-slate-500">Custom entries are always saved as <b>estimates</b>.</p>
+              {!editingId && (
+                <label className="col-span-2 flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.025] px-3 py-2.5 text-sm text-slate-300">
+                  <input type="checkbox" checked={saveAsRecipe} onChange={(e) => setSaveAsRecipe(e.target.checked)} className="accent-electric-500" />
+                  Save as reusable recipe
+                </label>
+              )}
+              {saveAsRecipe && !editingId && <div className="col-span-2"><Field label="Recipe name" value={recipeLabel} onChange={(e) => setRecipeLabel(e.target.value)} placeholder="e.g. My high-protein poha" /></div>}
+              <p className="col-span-2 text-xs text-slate-500">Custom values are self-reported estimates. A saved recipe keeps these values editable when you log it later.</p>
             </div>
           )}
 
@@ -388,7 +477,7 @@ function NutritionInner() {
                 {MEALS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
               </select>
             </div>
-            <Field label="Servings" inputMode="decimal" value={servings} onChange={(e) => setServings(e.target.value)} hint={selectedFood && !customMode ? `1 serving = ${selectedFood.portionLabel}` : undefined} />
+            <Field label="Servings" inputMode="decimal" value={servings} onChange={(e) => setServings(e.target.value)} hint={selectedFood && !customMode && !savedMode ? `1 serving = ${selectedFood.portionLabel}` : selectedRecipe && savedMode ? `1 serving = ${selectedRecipe.portionLabel}` : undefined} />
           </div>
 
           {formError && <p role="alert" className="text-sm text-coral">{formError}</p>}
