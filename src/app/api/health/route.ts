@@ -1,11 +1,17 @@
-import { NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+import { apiJson, logApiFailure, requestContext } from '@/lib/observability/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const present = (name: string) => Boolean(process.env[name]?.trim());
 
-export async function GET() {
+/**
+ * Safe deployment health endpoint. It reports configuration presence only —
+ * never values, keys, URLs, user counts, or private data.
+ */
+export async function GET(req: NextRequest) {
+  const trace = requestContext(req, 'GET /api/health');
   const checks = {
     firebaseClient: [
       'NEXT_PUBLIC_FIREBASE_API_KEY',
@@ -22,18 +28,19 @@ export async function GET() {
     groq: present('GROQ_API_KEY_PRIMARY') || present('GROQ_API_KEY_SECONDARY'),
     vision: process.env.GROQ_VISION_ENABLED === 'true',
     distributedRateLimit: present('UPSTASH_REDIS_REST_URL') && present('UPSTASH_REDIS_REST_TOKEN'),
+    alertWebhook: present('APEXFIT_ALERT_WEBHOOK_URL'),
   };
 
   const coreReady = checks.firebaseClient && checks.firebaseAdmin;
-  const response = NextResponse.json(
+  if (!coreReady) logApiFailure(trace, 'CORE_CONFIGURATION_MISSING', 503);
+  return apiJson(
     {
       status: coreReady ? 'ok' : 'degraded',
       service: 'apexfit-ai',
       timestamp: new Date().toISOString(),
       checks,
     },
+    trace,
     { status: coreReady ? 200 : 503 },
   );
-  response.headers.set('Cache-Control', 'no-store, max-age=0');
-  return response;
 }
