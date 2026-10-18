@@ -17,6 +17,7 @@ import {
   sendPasswordResetEmail,
   signOut,
   updateProfile,
+  reload,
   signInWithPopup,
   GoogleAuthProvider,
   setPersistence,
@@ -38,6 +39,8 @@ interface AuthContextValue {
   signInWithGoogle: () => Promise<void>;
   resetPassword: (email: string) => Promise<void>;
   logout: () => Promise<void>;
+  resendVerification: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -178,6 +181,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await signOut(requireAuth());
   }, [requireAuth]);
 
+  const resendVerification = useCallback(async () => {
+    if (!user) throw new Error('Not signed in.');
+    await sendEmailVerification(user);
+  }, [user]);
+
+  const refreshUser = useCallback(async () => {
+    if (!user) return;
+    await reload(user);
+  }, [user]);
+
   const getIdToken = useCallback(async () => {
     if (!user) throw new Error('Not signed in.');
     return user.getIdToken();
@@ -194,8 +207,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signInWithGoogle,
       resetPassword,
       logout,
+      resendVerification,
+      refreshUser,
     }),
-    [user, loading, configured, getIdToken, signIn, signUp, signInWithGoogle, resetPassword, logout],
+    [user, loading, configured, getIdToken, signIn, signUp, signInWithGoogle, resetPassword, logout, resendVerification, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

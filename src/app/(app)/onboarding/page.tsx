@@ -60,6 +60,7 @@ export default function OnboardingPage() {
     if (!user) return;
     const timeout = window.setTimeout(() => setProfileError(true), 15000);
     const unsubscribe = subscribeProfile(user.uid, (next) => {
+      window.clearTimeout(timeout);
       if (next?.onboardingCompleted) {
         router.replace('/dashboard');
         return;
