@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { verifyRequestUser, getUserAiContext, AdminNotConfiguredError, getAdminDb } from '@/lib/firebase/admin';
 import { groqChat, GroqNotConfiguredError, GroqRequestError, type ChatMessage } from '@/lib/ai/groq';
 import { checkRateLimit, clientIp } from '@/lib/ai/ratelimit';
@@ -9,6 +9,8 @@ import { dayKeyInTz } from '@/lib/arena/periods';
 import { daysAgoTs, dateKey, last7DayLabels } from '@/lib/dates';
 import type { WorkoutSession } from '@/lib/types';
 import type { RecoveryCheckinRecord } from '@/lib/db';
+import { coachSafetyCheck } from '@/lib/ai/safety';
+import { apiJson, logApiEvent, logApiFailure, requestContext } from '@/lib/observability/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -83,6 +85,7 @@ Rules you must always follow:
 - Keep answers concise (under 180 words unless a plan is requested). Use short paragraphs or bullets.`;
 
 export async function POST(req: NextRequest) {
+  const trace = requestContext(req, 'POST /api/ai/coach');
   // 1. Verify the caller's Firebase ID token → their own uid. Clients cannot
   //    impersonate another user: the uid comes solely from the verified token.
   let decoded;
@@ -90,32 +93,27 @@ export async function POST(req: NextRequest) {
     decoded = await verifyRequestUser(req);
   } catch (err) {
     if (err instanceof AdminNotConfiguredError) {
-      return NextResponse.json(
-        { error: 'AUTH_NOT_CONFIGURED', message: 'Server auth is not configured.' },
-        { status: 503 },
-      );
+      logApiFailure(trace, 'AUTH_NOT_CONFIGURED', 503);
+      return apiJson({ error: 'AUTH_NOT_CONFIGURED', message: 'Server auth is not configured.' }, trace, { status: 503 });
     }
     throw err;
   }
   if (!decoded) {
-    return NextResponse.json({ error: 'UNAUTHENTICATED' }, { status: 401 });
+    logApiFailure(trace, 'UNAUTHENTICATED', 401);
+    return apiJson({ error: 'UNAUTHENTICATED' }, trace, { status: 401 });
   }
   const uid = decoded.uid;
 
   // 2. Rate limits: per-IP cost bucket + per verified user bucket (spec §10).
   const rlIp = await checkRateLimit(`coach:ip:${clientIp(req)}`, 200, RL_WINDOW_MS);
   if (!rlIp.ok) {
-    return NextResponse.json(
-      { error: 'RATE_LIMITED', retryAfterSec: rlIp.retryAfterSec },
-      { status: 429, headers: { 'Retry-After': String(rlIp.retryAfterSec) } },
-    );
+    logApiFailure(trace, 'RATE_LIMITED_IP', 429);
+    return apiJson({ error: 'RATE_LIMITED', retryAfterSec: rlIp.retryAfterSec }, trace, { status: 429, headers: { 'Retry-After': String(rlIp.retryAfterSec) } });
   }
   const rl = await checkRateLimit(`coach:${uid}`, RL_LIMIT, RL_WINDOW_MS);
   if (!rl.ok) {
-    return NextResponse.json(
-      { error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec },
-      { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } },
-    );
+    logApiFailure(trace, 'RATE_LIMITED_USER', 429);
+    return apiJson({ error: 'RATE_LIMITED', retryAfterSec: rl.retryAfterSec }, trace, { status: 429, headers: { 'Retry-After': String(rl.retryAfterSec) } });
   }
 
   // 3. Validate input.
@@ -126,7 +124,15 @@ export async function POST(req: NextRequest) {
     body = null;
   }
   if (!body) {
-    return NextResponse.json({ error: 'BAD_REQUEST', message: 'Invalid message payload.' }, { status: 400 });
+    logApiFailure(trace, 'BAD_REQUEST', 400);
+    return apiJson({ error: 'BAD_REQUEST', message: 'Invalid message payload.' }, trace, { status: 400 });
+  }
+
+  // Deterministic safety replies take precedence over a generative model.
+  const safety = coachSafetyCheck(body.message);
+  if (safety) {
+    logApiEvent('info', trace, 'coach_safety_reply', { category: safety.kind });
+    return apiJson({ reply: safety.reply, safeguarded: true, model: 'apexfit-safety' }, trace);
   }
 
   // 4. Build context from server-trusted profile data + whitelisted client summary.
@@ -229,23 +235,21 @@ export async function POST(req: NextRequest) {
   // 5. Call Groq server-side with primary → fallback key handling.
   try {
     const result = await groqChat(messages);
-    return NextResponse.json({
+    logApiEvent('info', trace, 'coach_reply', { usedFallbackKey: result.usedFallbackKey });
+    return apiJson({
       reply: result.content,
       model: result.model,
       usedFallbackKey: result.usedFallbackKey,
-    });
+    }, trace);
   } catch (err) {
     if (err instanceof GroqNotConfiguredError) {
-      return NextResponse.json(
-        { error: 'GROQ_NOT_CONFIGURED', message: 'AI service keys are not configured on the server.' },
-        { status: 503 },
-      );
+      logApiFailure(trace, 'GROQ_NOT_CONFIGURED', 503);
+      return apiJson({ error: 'GROQ_NOT_CONFIGURED', message: 'AI service keys are not configured on the server.' }, trace, { status: 503 });
     }
     // Log only the failure mode — no keys, no user content.
-    console.error(
-      '[coach] Groq request failed:',
-      err instanceof GroqRequestError ? `HTTP ${err.status ?? 'network/timeout'}` : 'unexpected error',
-    );
-    return NextResponse.json({ error: 'AI_UNAVAILABLE' }, { status: 502 });
+    logApiFailure(trace, 'AI_UNAVAILABLE', 502, {
+      upstreamStatus: err instanceof GroqRequestError ? String(err.status ?? 'network-timeout') : 'unexpected',
+    });
+    return apiJson({ error: 'AI_UNAVAILABLE' }, trace, { status: 502 });
   }
 }
