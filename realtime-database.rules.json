@@ -67,7 +67,7 @@
         },
         "workouts": {
           "$workoutId": {
-            ".validate": "newData.hasChildren(['planId', 'planName', 'startedAt', 'durationSec', 'totalSets', 'status'])",
+            ".validate": "newData.hasChildren(['planId', 'planName', 'startedAt', 'durationSec', 'totalSets', 'status']) && (!data.child('sealedAt').exists() || newData.val() === data.val())",
             "planId": { ".validate": "newData.isString() && newData.val().length <= 60" },
             "planName": { ".validate": "newData.isString() && newData.val().length <= 120" },
             "startedAt": { ".validate": "newData.isNumber()" },
@@ -75,9 +75,9 @@
             "durationSec": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 21600" },
             "totalSets": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 500" },
             "status": { ".validate": "newData.val() === 'completed' || newData.val() === 'partial'" },
-            "verified": { ".validate": "!newData.exists() || newData.val() === false" },
-            "sealedAt": { ".validate": "!newData.exists()" },
-            "serverDurationSec": { ".validate": "!newData.exists()" },
+            "verified": { ".validate": "!data.exists() ? (!newData.exists() || newData.val() === false) : newData.val() === data.val()" },
+            "sealedAt": { ".validate": "!data.exists() ? !newData.exists() : newData.val() === data.val()" },
+            "serverDurationSec": { ".validate": "!data.exists() ? !newData.exists() : newData.val() === data.val()" },
             "exercises": {
               "$exIdx": {
                 ".validate": "newData.hasChildren(['name', 'targetSets', 'completedSets'])",
@@ -89,6 +89,13 @@
         },
 
         "$other": { ".validate": true }
+      }
+    },
+
+    "workoutStarts": {
+      "$uid": {
+        ".read": false,
+        ".write": false
       }
     },
 
