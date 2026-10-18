@@ -2,7 +2,12 @@ import type { Metadata, Viewport } from 'next';
 import './globals.css';
 import { AuthProvider } from '@/lib/auth/AuthProvider';
 
+// Set NEXT_PUBLIC_SITE_URL to the canonical HTTPS deployment URL in production.
+// The local fallback keeps relative Open Graph assets deterministic in development.
+const metadataBase = new URL(process.env.NEXT_PUBLIC_SITE_URL || 'http://localhost:3000');
+
 export const metadata: Metadata = {
+  metadataBase,
   title: {
     default: 'ApexFit AI — Fitness & Nutrition OS',
     template: '%s · ApexFit AI',
