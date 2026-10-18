@@ -41,6 +41,21 @@ export async function createProfile(
   await set(userRef(uid, 'preferences'), DEFAULT_PREFERENCES);
 }
 
+/** Create only missing records after a provider sign-in; never overwrite user edits. */
+export async function ensureProfile(
+  uid: string,
+  profile: Omit<UserProfile, 'createdAt'>,
+): Promise<void> {
+  const [profileSnap, prefsSnap] = await Promise.all([
+    get(userRef(uid, 'profile')),
+    get(userRef(uid, 'preferences')),
+  ]);
+  const writes: Promise<void>[] = [];
+  if (!profileSnap.exists()) writes.push(set(userRef(uid, 'profile'), { ...profile, createdAt: Date.now() }));
+  if (!prefsSnap.exists()) writes.push(set(userRef(uid, 'preferences'), DEFAULT_PREFERENCES));
+  await Promise.all(writes);
+}
+
 export function subscribeProfile(
   uid: string,
   cb: (profile: UserProfile | null) => void,
@@ -96,6 +111,26 @@ export async function addNutritionEntry(
   return node.key as string;
 }
 
+/** Atomically add a group of nutrition entries (e.g. one food-scan result). */
+export async function addNutritionEntries(
+  uid: string,
+  dayKey: string,
+  entries: Omit<NutritionEntry, 'id'>[],
+): Promise<string[]> {
+  const dayRef = userRef(uid, `nutrition/${dayKey}`);
+  const batch: Record<string, Omit<NutritionEntry, 'id'>> = {};
+  const ids: string[] = [];
+  for (const entry of entries) {
+    const node = push(dayRef);
+    const id = node.key;
+    if (!id) throw new Error('Could not allocate a nutrition entry ID.');
+    ids.push(id);
+    batch[id] = entry;
+  }
+  if (ids.length > 0) await update(dayRef, batch);
+  return ids;
+}
+
 export async function updateNutritionEntry(
   uid: string,
   dayKey: string,
@@ -141,8 +176,14 @@ export async function logWater(uid: string, dayKey: string, ml: number): Promise
 export async function saveWorkoutSession(
   uid: string,
   session: Omit<WorkoutSession, 'id'>,
+  sessionId?: string,
 ): Promise<string> {
-  const node = push(userRef(uid, 'workouts'));
+  // A server-started session provides a preallocated ID. Falling back to push
+  // preserves private self-reported logging when the verification service is
+  // unavailable; only the preallocated path can later earn Arena XP.
+  const node = sessionId
+    ? userRef(uid, `workouts/${sessionId}`)
+    : push(userRef(uid, 'workouts'));
   await set(node, session);
   return node.key as string;
 }
@@ -195,7 +236,9 @@ export interface RecoveryCheckinRecord {
 }
 
 export async function saveCheckin(uid: string, dayKey: string, checkin: Omit<RecoveryCheckinRecord, 'createdAt'>): Promise<void> {
-  await set(userRef(uid, `checkins/${dayKey}`), { ...checkin, createdAt: Date.now() });
+  // A user may update only one check-in field later. Merge it instead of
+  // replacing the whole day and silently deleting sleep/energy/soreness data.
+  await update(userRef(uid, `checkins/${dayKey}`), { ...checkin, createdAt: Date.now() });
 }
 
 export function subscribeCheckins(
