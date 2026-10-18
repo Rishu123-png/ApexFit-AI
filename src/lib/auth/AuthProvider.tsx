@@ -24,7 +24,7 @@ import {
   type User,
 } from 'firebase/auth';
 import { getFirebase, isFirebaseConfigured } from '@/lib/firebase/client';
-import { createProfile } from '@/lib/db';
+import { createProfile, ensureProfile } from '@/lib/db';
 
 interface AuthContextValue {
   user: User | null;
@@ -130,7 +130,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const signInWithGoogle = useCallback(async () => {
-    await signInWithPopup(requireAuth(), new GoogleAuthProvider());
+    const cred = await signInWithPopup(requireAuth(), new GoogleAuthProvider());
+    // Google accounts bypass email/password signup, so initialise the same
+    // private profile and preferences without overwriting an existing user.
+    await ensureProfile(cred.user.uid, {
+      displayName: cred.user.displayName?.trim() || 'Athlete',
+      email: cred.user.email ?? '',
+      goal: 'general-fitness',
+      experience: 'beginner',
+    });
   }, [requireAuth]);
 
   const resetPassword = useCallback(
