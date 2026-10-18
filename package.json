@@ -12,6 +12,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:rules": "firebase emulators:exec --only database \"vitest run --config vitest.rules.config.mts\"",
     "check-env": "node scripts/check-env.mjs",
     "check-env:production": "node scripts/check-env.mjs --production"
   },
@@ -31,11 +33,14 @@
     }
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
+    "@playwright/test": "^1.64.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20.16.10",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "autoprefixer": "^10.4.20",
+    "firebase-tools": "^15.34.0",
     "postcss": "^8.4.47",
     "tailwindcss": "^4.3.3",
     "typescript": "^5.6.3",
