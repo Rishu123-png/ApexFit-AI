@@ -77,6 +77,7 @@ export function authErrorMessage(err: unknown): string {
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
+  const [userRevision, setUserRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const configured = isFirebaseConfigured();
 
@@ -127,7 +128,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(
     async (email: string, password: string) => {
-      await signInWithEmailAndPassword(requireAuth(), email, password);
+      const cred = await signInWithEmailAndPassword(requireAuth(), email, password);
+      // Firebase may restore a cached user object whose emailVerified flag is
+      // stale. Reload it before routing into the private app.
+      await reload(cred.user);
+      setUser(cred.user);
+      setUserRevision((value) => value + 1);
     },
     [requireAuth],
   );
@@ -187,9 +193,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [user]);
 
   const refreshUser = useCallback(async () => {
-    if (!user) return;
-    await reload(user);
-  }, [user]);
+    const current = requireAuth().currentUser ?? user;
+    if (!current) return;
+    await reload(current);
+    setUser(current);
+    setUserRevision((value) => value + 1);
+  }, [requireAuth, user]);
 
   const getIdToken = useCallback(async () => {
     if (!user) throw new Error('Not signed in.');
@@ -210,7 +219,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       resendVerification,
       refreshUser,
     }),
-    [user, loading, configured, getIdToken, signIn, signUp, signInWithGoogle, resetPassword, logout, resendVerification, refreshUser],
+    [user, userRevision, loading, configured, getIdToken, signIn, signUp, signInWithGoogle, resetPassword, logout, resendVerification, refreshUser],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
