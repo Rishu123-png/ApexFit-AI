@@ -58,6 +58,12 @@ export interface ArenaScoreEntry {
   updatedAt: number;
   prevRank?: number;
   lastRank?: number;
+  /** Denormalized public display data avoids an N+1 profile lookup per row. */
+  displayName?: string;
+  avatarId?: string;
+  level?: number;
+  globalVisible?: boolean;
+  friendsVisible?: boolean;
 }
 
 export interface ArenaDayCounter {

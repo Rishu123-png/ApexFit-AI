@@ -97,43 +97,68 @@ export async function updateArenaProfile(
  */
 export async function withdrawFromArena(uid: string): Promise<void> {
   const db = getAdminDb();
-  const now = new Date();
-  const profile = await getArenaProfile(uid);
-  const tz = profile?.tz ?? DEFAULT_TZ;
-  const weekKey = weekKeyInTz(now, tz);
-  const seasonKey = seasonKeyInTz(now, tz);
-
-  // remove friendships both directions
-  const friendsSnap = await db.ref(`friendships/${uid}`).get();
+  // Read every mirrored relationship/public projection before one atomic
+  // multi-path deletion. Leaving must not strand request records or historic
+  // leaderboard rows that could reappear on a later re-join.
+  const [friendsSnap, incomingSnap, outgoingSnap, weeklySnap, seasonSnap] = await Promise.all([
+    db.ref(`friendships/${uid}`).get(),
+    db.ref(`friendRequests/${uid}`).get(),
+    db.ref(`friendRequestsSent/${uid}`).get(),
+    db.ref('arenaScores/weekly').get(),
+    db.ref('arenaScores/season').get(),
+  ]);
   const updates: Record<string, null> = {
     [`arenaProfiles/${uid}`]: null,
     [`arenaScores/lifetime/${uid}`]: null,
-    [`arenaScores/weekly/${weekKey}/${uid}`]: null,
-    [`arenaScores/season/${seasonKey}/${uid}`]: null,
     [`friendRequests/${uid}`]: null,
     [`friendRequestsSent/${uid}`]: null,
     [`friendships/${uid}`]: null,
+    [`blocks/${uid}`]: null,
   };
+
+  if (weeklySnap.exists()) {
+    for (const key of Object.keys(weeklySnap.val() as Record<string, unknown>)) {
+      updates[`arenaScores/weekly/${key}/${uid}`] = null;
+    }
+  }
+  if (seasonSnap.exists()) {
+    for (const key of Object.keys(seasonSnap.val() as Record<string, unknown>)) {
+      updates[`arenaScores/season/${key}/${uid}`] = null;
+    }
+  }
   if (friendsSnap.exists()) {
     for (const friendUid of Object.keys(friendsSnap.val() as Record<string, unknown>)) {
       updates[`friendships/${friendUid}/${uid}`] = null;
-      // also remove any of my pending requests stored under the friend
-      const reqSnap = await db
-        .ref(`friendRequests/${friendUid}`)
-        .orderByChild('fromUid')
-        .equalTo(uid)
-        .get();
-      if (reqSnap.exists()) {
-        for (const reqId of Object.keys(reqSnap.val() as Record<string, unknown>)) {
-          updates[`friendRequests/${friendUid}/${reqId}`] = null;
-        }
-      }
+    }
+  }
+  // Incoming request: remove the sender's matching outgoing mirror.
+  if (incomingSnap.exists()) {
+    for (const [requestId, raw] of Object.entries(incomingSnap.val() as Record<string, FriendRequestRecord>)) {
+      updates[`friendRequestsSent/${raw.fromUid}/${requestId}`] = null;
+    }
+  }
+  // Outgoing request: remove the recipient's matching incoming mirror.
+  if (outgoingSnap.exists()) {
+    for (const [requestId, raw] of Object.entries(outgoingSnap.val() as Record<string, FriendRequestSentRecord>)) {
+      updates[`friendRequests/${raw.toUid}/${requestId}`] = null;
     }
   }
   await db.ref().update(updates);
 }
 
 // ── Score projections ────────────────────────────────────────────────────────
+
+/** Public identity is denormalized into each score projection so leaderboard
+ * reads remain bounded rather than performing one profile read per score. */
+function scoreIdentity(profile: ArenaProfile, level: number) {
+  return {
+    displayName: profile.displayName,
+    avatarId: profile.avatarId,
+    level,
+    globalVisible: profile.visibility.global,
+    friendsVisible: profile.visibility.friends,
+  } satisfies Pick<ArenaScoreEntry, 'displayName' | 'avatarId' | 'level' | 'globalVisible' | 'friendsVisible'>;
+}
 
 /** Private lifetime XP balance (never deleted on opt-out). */
 export async function getLifetimeState(uid: string): Promise<ArenaLifetimeState> {
@@ -164,15 +189,38 @@ export async function syncProjections(uid: string): Promise<void> {
       updatedAt: now,
       prevRank: existing?.prevRank,
       lastRank: existing?.lastRank,
+      ...scoreIdentity(profile, lifetime.level),
     } satisfies ArenaScoreEntry;
   } else if (plan.deleteLifetime) {
     updates[`arenaScores/lifetime/${uid}`] = null;
   }
 
+  if (plan.writePeriods && profile) {
+    const currentPeriods = [
+      ['weekly', weekKeyInTz(new Date(), profile.tz)],
+      ['season', seasonKeyInTz(new Date(), profile.tz)],
+    ] as const;
+    const existingPeriods = await Promise.all(
+      currentPeriods.map(([period, key]) => db.ref(`arenaScores/${period}/${key}/${uid}`).get()),
+    );
+    for (let index = 0; index < currentPeriods.length; index += 1) {
+      const [period, key] = currentPeriods[index];
+      const existing = existingPeriods[index].val() as ArenaScoreEntry | null;
+      if (existing) {
+        updates[`arenaScores/${period}/${key}/${uid}`] = {
+          ...existing,
+          ...scoreIdentity(profile, lifetime.level),
+          updatedAt: now,
+        } satisfies ArenaScoreEntry;
+      }
+    }
+  }
+
   if (plan.deletePeriods) {
-    // Remove every stored weekly/seasonal projection for this user (bounded scan).
+    // Privacy beats an arbitrary historical limit: opt-out must remove every
+    // stored weekly/seasonal projection, not only the first 104 periods.
     for (const period of ['weekly', 'season'] as const) {
-      const s = await db.ref(`arenaScores/${period}`).orderByKey().limitToFirst(104).get();
+      const s = await db.ref(`arenaScores/${period}`).get();
       if (s.exists()) {
         for (const periodKey of Object.keys(s.val() as Record<string, unknown>)) {
           updates[`arenaScores/${period}/${periodKey}/${uid}`] = null;
@@ -200,7 +248,6 @@ async function computeRankInPath(path: string, myScore: number, uid: string): Pr
 
 interface AwardContext {
   uid: string;
-  tz: string;
   type: ArenaEventType;
   sourceId?: string;
 }
@@ -234,7 +281,7 @@ async function readOwnCalendar(uid: string, key: 'preferences' | 'profile') {
   return s.exists() ? (s.val() as Record<string, unknown>) : null;
 }
 
-async function workoutDaysInRange(uid: string, startMs: number): Promise<Set<string>> {
+async function workoutDaysInRange(uid: string, startMs: number, tz: string): Promise<Set<string>> {
   const q = await getAdminDb()
     .ref(`users/${uid}/workouts`)
     .orderByChild('startedAt')
@@ -245,7 +292,7 @@ async function workoutDaysInRange(uid: string, startMs: number): Promise<Set<str
   if (q.exists()) {
     for (const v of Object.values(q.val() as Record<string, WorkoutSession>)) {
       // only server-sealed sessions count toward missions/milestones
-      if (v.verified === true) days.add(new Date(v.startedAt).toISOString().slice(0, 10));
+      if (v.verified === true) days.add(dayKeyInTz(new Date(v.startedAt), tz));
     }
   }
   return days;
@@ -258,22 +305,22 @@ async function workoutDaysInRange(uid: string, startMs: number): Promise<Set<str
  */
 export async function awardXp({
   uid,
-  tz,
   type,
   sourceId,
 }: AwardContext): Promise<ArenaClaimResult> {
   const db = getAdminDb();
   const profile = await getArenaProfile(uid);
   if (!profile) return { status: 'not_participating', xpAwarded: 0 };
-
+  // The stored profile is the sole authority for competition boundaries.
+  const tz = profile.tz || DEFAULT_TZ;
   const now = new Date();
   const dayKey = dayKeyInTz(now, tz);
   const weekKey = weekKeyInTz(now, tz);
   const seasonKey = seasonKeyInTz(now, tz);
   const xp = ARENA_XP_CONFIG.xp[type];
 
-  // ── 1. Load the evidence and validate ELIGIBILITY (functions read only the
-  //        claimer's own records — enforced by using the verified uid).
+  // Load and validate only the caller's own evidence before attempting a
+  // mutation. Nothing client supplied determines XP or evidence content.
   const dayCounter = await getDayCounter(uid, dayKey);
   let session: SessionLike | null = null;
   if (type === 'workout_completed' || type === 'mobility_session') {
@@ -287,11 +334,11 @@ export async function awardXp({
   const prefs = type === 'nutrition_milestone' ? ((await readOwnCalendar(uid, 'preferences')) as Preferences | null) : null;
   const anyWorkoutToday =
     type === 'daily_mission'
-      ? (await workoutDaysInRange(uid, startOfDayMsInTz(dayKey, tz))).size > 0
+      ? (await workoutDaysInRange(uid, startOfDayMsInTz(dayKey, tz), tz)).size > 0
       : undefined;
   const workoutDaysThisWeek =
     type === 'weekly_milestone'
-      ? (await workoutDaysInRange(uid, weekStartMsInTz(now, tz))).size
+      ? (await workoutDaysInRange(uid, weekStartMsInTz(now, tz), tz)).size
       : undefined;
 
   const eligibility = checkEligibility(type, {
@@ -304,144 +351,157 @@ export async function awardXp({
   });
   if (!eligibility.ok) return { status: 'not_eligible', reason: eligibility.reason, xpAwarded: 0 };
 
-  // ── 2. Durable, idempotent event state machine (spec §6).
-  //        Event record = pending → applied | failed(retryable) | cap_limited(closed).
-  //        Stage flags make every step recoverable after a partial failure. ──
   const eventKey = fbSafeKey(arenaEventId(type, { sessionId: sourceId, dayKey, weekKey }));
-  const eventRef = db.ref(`arenaEvents/${uid}/${eventKey}`);
-  const existing = (await eventRef.get()).val() as StoredArenaEvent | null;
-  const decision = eventDecision(existing, Date.now());
-
-  if (decision.action === 'replay') {
-    return decision.status === 'cap_limited'
+  const eventPath = `arenaEvents/${uid}/${eventKey}`;
+  const before = (await db.ref(eventPath).get()).val() as StoredArenaEvent | null;
+  const beforeDecision = eventDecision(before, Date.now());
+  if (beforeDecision.action === 'replay') {
+    return beforeDecision.status === 'cap_limited'
       ? { status: 'daily_cap', reason: 'Daily cap was already reached when this event was recorded.', xpAwarded: 0 }
       : { status: 'already_awarded', reason: 'This activity was already rewarded.', xpAwarded: 0 };
   }
-  if (decision.action === 'in-progress') {
+  if (beforeDecision.action === 'in-progress') {
     return { status: 'busy', reason: 'This reward is being processed — retry in a few seconds.', xpAwarded: 0 };
   }
 
-  let event: StoredArenaEvent;
-  if (decision.action === 'create') {
-    event = { type, sourceId, xp, dayKey, weekKey, seasonKey, createdAt: Date.now(), status: 'pending', attempts: 1 };
-    const claimTxn = await eventRef.transaction((cur) => (cur ? undefined : event), undefined, false);
-    if (claimTxn.committed !== true) {
-      // An identical claim landed concurrently — answer from its state, never double-award.
-      const snap2 = (await eventRef.get()).val() as StoredArenaEvent | null;
-      const d2 = eventDecision(snap2, Date.now());
-      return d2.action === 'replay'
-        ? { status: d2.status === 'cap_limited' ? 'daily_cap' : 'already_awarded', xpAwarded: 0 }
-        : { status: 'busy', reason: 'A concurrent identical claim is in progress.', xpAwarded: 0 };
-    }
-  } else {
-    // Retry of a failed/stale-pending event: the STORED record is authoritative.
-    event = { ...decision.event, status: 'pending', attempts: (decision.event.attempts ?? 0) + 1 };
-    await eventRef.update({ status: 'pending', attempts: event.attempts, error: null });
-  }
-
-  // ── 3. Apply stages, durably marking each one on the event. On ANY failure
-  //        the event is marked 'failed' and the same claim may safely retry —
-  //        nothing reports success until every stage is durably applied. ──
-  const isWorkoutType = event.type === 'workout_completed' || event.type === 'mobility_session';
+  const isWorkoutType = type === 'workout_completed' || type === 'mobility_session';
+  let capReason = 'Daily cap reached.';
 
   try {
-    // Stage A — the daily cap + workout quota, atomically (spec §7).
-    if (event.dailyApplied !== true) {
-      let capReason = 'Daily cap reached.';
-      const dailyTxn = await db
-        .ref(`arenaState/${uid}/days/${event.dayKey}`)
-        .transaction(
-          (cur: ArenaDayCounter | null) => {
-            const d = decideDailyAward(cur, { xp: event.xp, isWorkoutType }, ARENA_XP_CONFIG);
-            if (!d.ok) {
-              capReason = d.reason;
-              return undefined; // abort — no partial counter write
-            }
-            return d.next;
-          },
-          undefined,
-          false,
-        );
-      if (dailyTxn.committed !== true) {
-        await eventRef.update({ status: 'cap_limited', error: null, appliedAt: Date.now() });
-        return { status: 'daily_cap', reason: capReason, xpAwarded: 0 };
-      }
-      await eventRef.update({ dailyApplied: true });
-    }
+    /*
+     * ONE root transaction applies the event record, daily counter, private
+     * balance and public projections together. The old multi-stage approach
+     * could commit an aggregate and then fail before recording its stage flag;
+     * retrying then awarded the same event twice. This transaction is the
+     * durable idempotency boundary: either all mutations commit or none do.
+     */
+    const tx = await db.ref().transaction((raw: unknown) => {
+      const tree = (raw && typeof raw === 'object' ? raw : {}) as Record<string, any>;
+      tree.arenaEvents ??= {};
+      tree.arenaEvents[uid] ??= {};
+      const events = tree.arenaEvents[uid] as Record<string, StoredArenaEvent>;
+      const existing = events[eventKey] ?? null;
+      const decision = eventDecision(existing, Date.now());
+      if (decision.action === 'replay' || decision.action === 'in-progress') return undefined;
 
-    // Stage B — private lifetime balance (never client-writable).
-    let lifetime: ArenaLifetimeState;
-    if (event.lifetimeApplied !== true) {
-      const lifetimeTxn = await db
-        .ref(`arenaState/${uid}/lifetime`)
-        .transaction((cur: ArenaLifetimeState | null) => {
-          const nextXp = (cur?.xp ?? 0) + event.xp;
-          return { xp: nextXp, level: levelOf(nextXp), updatedAt: Date.now() };
-        });
-      lifetime = lifetimeTxn.snapshot.val() as ArenaLifetimeState;
-      await eventRef.update({ lifetimeApplied: true });
-    } else {
-      lifetime = ((await db.ref(`arenaState/${uid}/lifetime`).get()).val() as ArenaLifetimeState | null) ?? {
-        xp: 0,
-        level: 0,
+      const event: StoredArenaEvent = decision.action === 'retry'
+        ? { ...decision.event, status: 'pending', attempts: (decision.event.attempts ?? 0) + 1, error: undefined }
+        : {
+            type,
+            sourceId,
+            xp,
+            dayKey,
+            weekKey,
+            seasonKey,
+            createdAt: Date.now(),
+            status: 'pending',
+            attempts: 1,
+          };
+
+      tree.arenaState ??= {};
+      tree.arenaState[uid] ??= {};
+      const userState = tree.arenaState[uid] as Record<string, any>;
+      userState.days ??= {};
+      const daily = decideDailyAward(
+        (userState.days[event.dayKey] ?? null) as ArenaDayCounter | null,
+        { xp: event.xp, isWorkoutType },
+        ARENA_XP_CONFIG,
+      );
+      if (!daily.ok) {
+        capReason = daily.reason;
+        events[eventKey] = { ...event, status: 'cap_limited', error: undefined, appliedAt: Date.now() };
+        return tree;
+      }
+      userState.days[event.dayKey] = daily.next;
+
+      const currentLifetime = (userState.lifetime ?? null) as ArenaLifetimeState | null;
+      const previousXp = typeof currentLifetime?.xp === 'number' ? currentLifetime.xp : 0;
+      const nextLifetime: ArenaLifetimeState = {
+        xp: previousXp + event.xp,
+        level: levelOf(previousXp + event.xp),
         updatedAt: Date.now(),
       };
-    }
-    const prevLevel = levelOf(lifetime.xp - event.xp);
-    const leveledUp = event.lifetimeApplied !== true && lifetime.level > prevLevel;
+      userState.lifetime = nextLifetime;
 
-    // Stage C — public projections per CURRENT consent (additive → stage-flagged).
-    const plan = projectionPlan(true, profile.visibility);
-    if (event.periodsApplied !== true) {
-      if (plan.writePeriods) {
-        const scoreUpdate = (cur: ArenaScoreEntry | null) => ({
-          score: (cur?.score ?? 0) + event.xp,
+      tree.arenaScores ??= {};
+      const scores = tree.arenaScores as Record<string, any>;
+      const liveProfile = (tree.arenaProfiles?.[uid] ?? null) as ArenaProfile | null;
+      const plan = projectionPlan(liveProfile !== null, liveProfile?.visibility);
+
+      if (plan.writeLifetime) {
+        scores.lifetime ??= {};
+        const old = (scores.lifetime[uid] ?? {}) as ArenaScoreEntry;
+        scores.lifetime[uid] = {
+          score: nextLifetime.xp,
           updatedAt: Date.now(),
-          prevRank: cur?.prevRank,
-          lastRank: cur?.lastRank,
-        });
-        if (plan.writeLifetime) {
-          // absolute write (idempotent by construction)
-          await db.ref(`arenaScores/lifetime/${uid}`).transaction((cur: ArenaScoreEntry | null) => ({
-            score: lifetime.xp,
-            updatedAt: Date.now(),
-            prevRank: cur?.lastRank ?? cur?.prevRank,
-            lastRank: undefined as unknown as number,
-          }));
-        }
-        const weekKeyOfEvent = event.weekKey;
-        const seasonKeyOfEvent = event.seasonKey;
-        await db.ref(`arenaScores/weekly/${weekKeyOfEvent}/${uid}`).transaction(scoreUpdate);
-        await db.ref(`arenaScores/season/${seasonKeyOfEvent}/${uid}`).transaction(scoreUpdate);
-
-        // Rank snapshots for the delta display (bounded reads; best-effort).
-        const [weekRank, lifeRank] = await Promise.all([
-          computeRankInPath(`arenaScores/weekly/${weekKeyOfEvent}`, (await db.ref(`arenaScores/weekly/${weekKeyOfEvent}/${uid}/score`).get()).val() ?? 0, uid),
-          plan.writeLifetime
-            ? computeRankInPath('arenaScores/lifetime', lifetime.xp, uid)
-            : Promise.resolve(0),
-        ]);
-        const metaUpdate: Record<string, unknown> = {
-          [`arenaScores/weekly/${weekKeyOfEvent}/${uid}/prevRank`]: (await db.ref(`arenaScores/weekly/${weekKeyOfEvent}/${uid}/lastRank`).get()).val() ?? null,
-          [`arenaScores/weekly/${weekKeyOfEvent}/${uid}/lastRank`]: weekRank,
-        };
-        if (plan.writeLifetime && lifeRank > 0) {
-          metaUpdate[`arenaScores/lifetime/${uid}/prevRank`] =
-            (await db.ref(`arenaScores/lifetime/${uid}/lastRank`).get()).val() ?? null;
-          metaUpdate[`arenaScores/lifetime/${uid}/lastRank`] = lifeRank;
-        }
-        await db.ref().update(metaUpdate);
+          prevRank: old.lastRank ?? old.prevRank,
+          ...(liveProfile ? scoreIdentity(liveProfile, nextLifetime.level) : {}),
+        } satisfies ArenaScoreEntry;
+      } else if (scores.lifetime) {
+        delete scores.lifetime[uid];
       }
-      await eventRef.update({ periodsApplied: true });
+
+      if (plan.writePeriods) {
+        for (const [period, key] of [['weekly', event.weekKey], ['season', event.seasonKey]] as const) {
+          scores[period] ??= {};
+          scores[period][key] ??= {};
+          const old = (scores[period][key][uid] ?? {}) as ArenaScoreEntry;
+          scores[period][key][uid] = {
+            score: (typeof old.score === 'number' ? old.score : 0) + event.xp,
+            updatedAt: Date.now(),
+            prevRank: old.prevRank,
+            lastRank: old.lastRank,
+            ...(liveProfile ? scoreIdentity(liveProfile, nextLifetime.level) : {}),
+          } satisfies ArenaScoreEntry;
+        }
+      } else if (plan.deletePeriods) {
+        // Full deletion honours opt-out even for historical periods.
+        for (const period of ['weekly', 'season'] as const) {
+          for (const periodRows of Object.values(scores[period] ?? {}) as Record<string, unknown>[]) {
+            if (periodRows && typeof periodRows === 'object') delete (periodRows as Record<string, unknown>)[uid];
+          }
+        }
+      }
+
+      events[eventKey] = {
+        ...event,
+        dailyApplied: true,
+        lifetimeApplied: true,
+        periodsApplied: true,
+        status: 'applied',
+        error: undefined,
+        appliedAt: Date.now(),
+      };
+      return tree;
+    }, undefined, false);
+
+    const stored = ((tx.snapshot.val() as Record<string, any> | null)?.arenaEvents?.[uid]?.[eventKey] ?? null) as StoredArenaEvent | null;
+    if (stored?.status === 'cap_limited') {
+      return { status: 'daily_cap', reason: capReason, xpAwarded: 0 };
+    }
+    const appliedLifetime = ((tx.snapshot.val() as Record<string, any> | null)?.arenaState?.[uid]?.lifetime ?? null) as ArenaLifetimeState | null;
+    if (!tx.committed || stored?.status !== 'applied' || !appliedLifetime) {
+      const latest = eventDecision(stored, Date.now());
+      if (latest.action === 'replay') {
+        return latest.status === 'cap_limited'
+          ? { status: 'daily_cap', reason: 'Daily cap was already reached when this event was recorded.', xpAwarded: 0 }
+          : { status: 'already_awarded', reason: 'This activity was already rewarded.', xpAwarded: 0 };
+      }
+      return { status: 'busy', reason: 'This reward is being processed — retry in a few seconds.', xpAwarded: 0 };
     }
 
-    // Every stage durably done — only now can success be truthfully reported.
-    await eventRef.update({ status: 'applied', appliedAt: Date.now(), error: null });
-    return { status: 'awarded', xpAwarded: event.xp, lifetime: { xp: lifetime.xp, level: lifetime.level, leveledUp } };
-  } catch (err) {
-    await eventRef
-      .update({ status: 'failed', error: err instanceof Error ? err.message.slice(0, 200) : 'unknown' })
-      .catch(() => undefined);
+    return {
+      status: 'awarded',
+      xpAwarded: stored.xp,
+      lifetime: {
+        xp: appliedLifetime.xp,
+        level: appliedLifetime.level,
+        leveledUp: appliedLifetime.level > levelOf(Math.max(0, appliedLifetime.xp - stored.xp)),
+      },
+    };
+  } catch {
+    // Do not write a separate failed marker here: a network error after a
+    // commit is ambiguous. The next call reads the authoritative event state.
     return { status: 'failed', reason: 'Reward processing failed — safely retry the same claim.', xpAwarded: 0 };
   }
 }
@@ -459,7 +519,9 @@ export async function computeStreak(uid: string, tz: string): Promise<number> {
   const q = await getAdminDb().ref(`users/${uid}/workouts`).orderByChild('startedAt').startAt(since).limitToLast(400).get();
   if (!q.exists()) return 0;
   for (const v of Object.values(q.val() as Record<string, WorkoutSession>)) {
-    days.add(dayKeyInTz(new Date(v.startedAt), tz));
+    // Streaks shown in the competitive Arena must use the same sealed-session
+    // standard as awards; self-reported rows stay private history only.
+    if (v.verified === true) days.add(dayKeyInTz(new Date(v.startedAt), tz));
   }
   let streak = 0;
   const cursor = new Date();
@@ -547,6 +609,23 @@ export async function acceptFriendRequest(uid: string, requestId: string) {
     await removeRequestRecords(uid, requestId, req.fromUid);
     return { ok: false as const, message: 'Unable to accept this request.' };
   }
+  const [recipientProfile, senderProfile, recipientFriends, senderFriends] = await Promise.all([
+    getArenaProfile(uid),
+    getArenaProfile(req.fromUid),
+    getFriendUids(uid),
+    getFriendUids(req.fromUid),
+  ]);
+  if (!recipientProfile || !senderProfile) {
+    await removeRequestRecords(uid, requestId, req.fromUid);
+    return { ok: false as const, message: 'This Arena participant is no longer available.' };
+  }
+  if (recipientFriends.includes(req.fromUid) || senderFriends.includes(uid)) {
+    await removeRequestRecords(uid, requestId, req.fromUid);
+    return { ok: true as const, message: 'You are already Arena friends.' };
+  }
+  if (recipientFriends.length >= MAX_FRIENDS || senderFriends.length >= MAX_FRIENDS) {
+    return { ok: false as const, message: 'One of these friend lists is full.' };
+  }
   const now = Date.now();
   await db.ref().update({
     [`friendships/${uid}/${req.fromUid}`]: { createdAt: now } satisfies FriendshipRecord,
@@ -595,7 +674,10 @@ export async function blockUser(uid: string, target: { arenaId?: string; uid?: s
   };
   // remove pending requests either direction
   const inReq = await db.ref(`friendRequests/${uid}`).orderByChild('fromUid').equalTo(targetUid).get();
-  if (inReq.exists()) for (const id of Object.keys(inReq.val() as object)) updates[`friendRequests/${uid}/${id}`] = null;
+  if (inReq.exists()) for (const id of Object.keys(inReq.val() as object)) {
+    updates[`friendRequests/${uid}/${id}`] = null;
+    updates[`friendRequestsSent/${targetUid}/${id}`] = null;
+  }
   const outReq = await db.ref(`friendRequests/${targetUid}`).orderByChild('fromUid').equalTo(uid).get();
   if (outReq.exists()) for (const id of Object.keys(outReq.val() as object)) {
     updates[`friendRequests/${targetUid}/${id}`] = null;
@@ -701,15 +783,40 @@ export async function getLeaderboard(
   // Friend relationship map is needed for the friends board.
   const friendUids = scope === 'friends' ? new Set(await getFriendUids(requesterUid)) : null;
 
-  // Join with public allowlist profiles + apply participation rules.
+  // New score projections contain the public name/avatar/level/visibility they
+  // need, eliminating the former N+1 profile and lifetime-state reads. The
+  // fallback exists only for rows written before this schema; each of those is
+  // refreshed the next time its owner earns XP or saves Arena settings.
   const candidates = (
     await Promise.all(
       scores.map(async (s) => {
         if (scope === 'friends' && s.uid !== requesterUid && !friendUids!.has(s.uid)) return null;
+        const hasProjectedIdentity =
+          typeof s.displayName === 'string' &&
+          typeof s.avatarId === 'string' &&
+          typeof s.level === 'number' &&
+          typeof s.globalVisible === 'boolean' &&
+          typeof s.friendsVisible === 'boolean';
+        if (hasProjectedIdentity) {
+          if (scope === 'global' && !s.globalVisible) return null;
+          if (scope === 'friends' && s.uid !== requesterUid && !s.friendsVisible) return null;
+          return {
+            uid: s.uid,
+            score: s.score,
+            updatedAt: s.updatedAt,
+            prevRank: s.prevRank,
+            lastRank: s.lastRank,
+            displayName: s.displayName!,
+            avatarId: s.avatarId!,
+            level: s.level!,
+          };
+        }
+
         const p = await getArenaProfile(s.uid);
         if (!p) return null;
         if (scope === 'global' && !p.visibility.global) return null;
         if (scope === 'friends' && s.uid !== requesterUid && !p.visibility.friends) return null;
+        const level = period === 'lifetime' ? levelOf(s.score) : (await getLifetimeState(s.uid)).level;
         return {
           uid: s.uid,
           score: s.score,
@@ -718,6 +825,7 @@ export async function getLeaderboard(
           lastRank: s.lastRank,
           displayName: p.displayName,
           avatarId: p.avatarId,
+          level,
         };
       }),
     )
@@ -731,7 +839,7 @@ export async function getLeaderboard(
     page.map(async (r) => {
       const self = r.uid === requesterUid;
       const friendship: LeaderboardRow['friendship'] = self ? 'self' : friendUids?.has(r.uid) ? 'friend' : 'none';
-      const level = period === 'lifetime' ? levelOf(r.score) : (await getLifetimeState(r.uid)).level;
+      const level = r.level;
       const delta =
         typeof r.prevRank === 'number' && typeof r.lastRank === 'number' ? r.prevRank - r.lastRank : null;
       return {
