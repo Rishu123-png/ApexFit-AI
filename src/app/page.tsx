@@ -28,8 +28,8 @@ const FEATURES = [
   {
     icon: IconCamera,
     title: 'Camera form tracking',
-    body: 'Browser-based pose analysis for rep counting and form feedback. Engine integration in progress.',
-    tag: 'Coming soon',
+    body: 'Opt-in browser-based pose guidance for supported movements. Camera frames stay on your device and never decide whether exercise is safe.',
+    tag: 'Live',
   },
   {
     icon: IconDroplet,
