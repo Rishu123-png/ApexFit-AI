@@ -41,9 +41,11 @@ export default function ArenaPage() {
             ? 'Server auth (FIREBASE_ADMIN_*) is not configured, so the Arena cannot verify sessions. See README → Server secrets.'
             : err instanceof ArenaApiError && err.code === 'RATE_LIMITED'
               ? 'Too many requests in a short time. Wait a minute and retry.'
-              : err instanceof DOMException && err.name === 'TimeoutError'
-                ? 'The server took too long to respond (slow network or cold start). Tap retry.'
-                : 'Couldn’t load the Arena. Check your connection and retry.',
+              : err instanceof ArenaApiError && (err.code === 'ARENA_TIMEOUT' || err.code === 'ARENA_UNAVAILABLE')
+                ? 'Arena is temporarily slow or unavailable. Your private workout data is safe — tap retry.'
+                : err instanceof DOMException && err.name === 'TimeoutError'
+                  ? 'The server took too long to respond (slow network or cold start). Tap retry.'
+                  : 'Couldn’t load the Arena. Check your connection and retry.',
       });
     }
   }, [getIdToken]);
