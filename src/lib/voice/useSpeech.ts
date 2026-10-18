@@ -46,10 +46,14 @@ export function isSpeechSupported(): boolean {
 export function useSpeechRecognition(opts: { onTranscript: (text: string) => void; lang?: string }) {
   const [state, setState] = useState<SpeechState>({ kind: 'idle' });
   const recRef = useRef<SpeechRecognitionLike | null>(null);
+  const runRef = useRef(0);
   const onTranscriptRef = useRef(opts.onTranscript);
   onTranscriptRef.current = opts.onTranscript;
 
-  useEffect(() => () => recRef.current?.abort(), []);
+  useEffect(() => () => {
+    runRef.current += 1;
+    recRef.current?.abort();
+  }, []);
 
   const start = useCallback(() => {
     if (!isSpeechSupported()) {
@@ -58,6 +62,7 @@ export function useSpeechRecognition(opts: { onTranscript: (text: string) => voi
     }
     try {
       recRef.current?.abort();
+      const run = ++runRef.current;
       const Ctor = (window.SpeechRecognition ?? window.webkitSpeechRecognition)!;
       const rec = new Ctor();
       recRef.current = rec;
@@ -67,6 +72,7 @@ export function useSpeechRecognition(opts: { onTranscript: (text: string) => voi
       rec.maxAlternatives = 1;
 
       rec.onresult = (e) => {
+        if (runRef.current !== run) return;
         const item = e.results[e.resultIndex];
         const text = item?.[0]?.transcript ?? '';
         if (item?.isFinal) {
@@ -77,6 +83,7 @@ export function useSpeechRecognition(opts: { onTranscript: (text: string) => voi
         }
       };
       rec.onerror = (e) => {
+        if (runRef.current !== run) return;
         if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
           setState({ kind: 'denied' });
         } else if (e.error === 'no-speech') {
@@ -88,7 +95,9 @@ export function useSpeechRecognition(opts: { onTranscript: (text: string) => voi
         }
       };
       rec.onend = () => {
-        setState((s) => (s.kind === 'listening' ? { kind: 'idle' } : s));
+        if (runRef.current === run) {
+          setState((s) => (s.kind === 'listening' ? { kind: 'idle' } : s));
+        }
       };
 
       setState({ kind: 'listening' });
@@ -99,8 +108,12 @@ export function useSpeechRecognition(opts: { onTranscript: (text: string) => voi
   }, [opts.lang]);
 
   const stop = useCallback(() => {
+    // In several browsers stop() still emits one final recognition result.
+    // Invalidate this run first and abort so a cancelled mic cannot execute a
+    // late workout command.
+    runRef.current += 1;
     try {
-      recRef.current?.stop();
+      recRef.current?.abort();
     } finally {
       setState({ kind: 'idle' });
     }
