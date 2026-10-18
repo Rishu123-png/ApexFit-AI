@@ -28,3 +28,44 @@ export async function requireArenaUser(
 export function isErrorResponse(v: { uid: string } | NextResponse): v is NextResponse {
   return v instanceof NextResponse;
 }
+
+export class ArenaServiceTimeoutError extends Error {
+  constructor() {
+    super('Arena service timed out');
+    this.name = 'ArenaServiceTimeoutError';
+  }
+}
+
+/**
+ * Firebase Admin calls do not accept AbortSignals. Race them against a short
+ * response deadline so a stalled database connection never leaves a mobile
+ * Arena screen on an indefinite skeleton. The underlying call may finish
+ * later, but no further response is sent from this request.
+ */
+export async function withArenaDeadline<T>(work: Promise<T>, timeoutMs = 12_000): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      work,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new ArenaServiceTimeoutError()), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function arenaUnavailableResponse(err: unknown, operation: string): NextResponse {
+  const timedOut = err instanceof ArenaServiceTimeoutError;
+  if (!timedOut) {
+    console.error(`[arena] ${operation} failed:`, err instanceof Error ? err.message : 'unknown');
+  }
+  return NextResponse.json(
+    {
+      error: timedOut ? 'ARENA_TIMEOUT' : 'ARENA_UNAVAILABLE',
+      message: timedOut ? 'Arena is taking too long to respond. Please retry.' : 'Arena is temporarily unavailable. Please retry.',
+    },
+    { status: timedOut ? 504 : 503 },
+  );
+}
