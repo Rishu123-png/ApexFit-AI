@@ -58,6 +58,8 @@ export function CoachPanel({ context }: { context: CoachContext }) {
         setError('The AI coach needs GROQ_API_KEY_PRIMARY configured on the server (Vercel env or .env.local).');
       } else if (code === 'RATE_LIMITED') {
         setError('You’ve reached the current AI usage limit. Please try again later.');
+      } else if (code === 'COACH_TIMEOUT') {
+        setError('The coach took too long to respond. Please retry in a moment.');
       } else {
         setError('The coach is unavailable right now. Please try again in a moment.');
       }
