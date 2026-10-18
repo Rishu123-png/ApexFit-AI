@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { motion, useReducedMotion } from 'framer-motion';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
-import { subscribeRecentWorkouts, subscribeWeekWorkouts, subscribeCheckins, saveCheckin, type RecoveryCheckinRecord } from '@/lib/db';
+import { subscribeRecentWorkouts, subscribeWeekWorkouts, subscribeCheckins, saveCheckin, subscribeBodyMetrics, subscribeProfile, type RecoveryCheckinRecord } from '@/lib/db';
 import { recommendToday } from '@/lib/core/adaptive';
 import { computeReadiness } from '@/lib/core/readiness';
 import { suggestNextForExercise, buildExerciseTrends } from '@/lib/core/progression';
@@ -13,7 +13,7 @@ import { dateKey, last7DayLabels, daysAgoTs, formatDuration } from '@/lib/dates'
 import { MiniBars } from '@/components/charts';
 import { GlassCard, Badge, Button, Alert } from '@/components/ui';
 import { IconTrendingUp, IconCopy, IconCheck, IconInfo, IconBolt, IconFlame } from '@/components/icons';
-import type { WorkoutSession } from '@/lib/types';
+import type { BodyMetric, UserProfile, WorkoutSession } from '@/lib/types';
 
 function minutesByDay(sessions: WorkoutSession[]): { label: string; value: number }[] {
   const days = last7DayLabels();
@@ -49,6 +49,8 @@ export default function InsightsPage() {
   const [week, setWeek] = useState<WorkoutSession[]>([]);
   const [recent, setRecent] = useState<WorkoutSession[]>([]);
   const [checkins, setCheckins] = useState<Record<string, RecoveryCheckinRecord>>({});
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [bodyMetrics, setBodyMetrics] = useState<BodyMetric[]>([]);
   const [checkinDraft, setCheckinDraft] = useState<{ sleep: string; energy: string; soreness: string }>({ sleep: '', energy: '', soreness: '' });
   const [checkinState, setCheckinState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [copied, setCopied] = useState(false);
@@ -63,10 +65,14 @@ export default function InsightsPage() {
       setLoaded(true);
     });
     const u3 = subscribeCheckins(uid, 14, setCheckins);
+    const u4 = subscribeProfile(uid, setProfile);
+    const u5 = subscribeBodyMetrics(uid, setBodyMetrics);
     return () => {
       u1();
       u2();
       u3();
+      u4();
+      u5();
     };
   }, [uid]);
 
@@ -88,6 +94,13 @@ export default function InsightsPage() {
     })();
     return { totalSessions, totalMinutes, longest, verified, favPlan, streak: currentStreak(all) };
   }, [recent]);
+
+  const weightSnapshot = useMemo(() => {
+    const first = bodyMetrics[0] ?? null;
+    const latest = bodyMetrics.at(-1) ?? null;
+    const target = profile?.targetWeightKg;
+    return { first, latest, target, height: profile?.heightCm ?? latest?.heightCm ?? first?.heightCm ?? null };
+  }, [bodyMetrics, profile]);
 
   const weekMinutes = useMemo(() => minutesByDay(week), [week]);
   const weekCount = week.length;
@@ -294,6 +307,26 @@ export default function InsightsPage() {
           </div>
         )}
       </GlassCard>
+
+      {/* Self-reported progress trajectory. It shows recorded values only and never predicts appearance/body composition. */}
+      {weightSnapshot.latest && (
+        <GlassCard className="overflow-hidden border border-violet/20 bg-[linear-gradient(135deg,rgba(45,24,78,.28),rgba(8,14,30,.72))]">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-[10px] font-black uppercase tracking-[.16em] text-violet-300">Private goal trajectory</p>
+              <h2 className="mt-1 text-lg font-black">Current position vs. your target</h2>
+              <p className="mt-1 max-w-xl text-xs leading-relaxed text-slate-400">Based on self-reported check-ins only. This is a planning chart, not a prediction of appearance, body type, body fat, or health outcome.</p>
+            </div>
+            {weightSnapshot.height && <Badge tone="slate">{weightSnapshot.height} cm baseline</Badge>}
+          </div>
+          <div className="mt-5 grid gap-4 sm:grid-cols-[1fr_auto_1fr] sm:items-center">
+            <div className="rounded-2xl border border-white/10 bg-white/[.035] p-4 text-center"><p className="text-[10px] font-black uppercase tracking-[.15em] text-slate-500">Current</p><p className="mt-1 text-3xl font-black text-neon">{weightSnapshot.latest.weightKg}<span className="ml-1 text-sm text-slate-400">kg</span></p>{weightSnapshot.first && weightSnapshot.first.weightKg !== weightSnapshot.latest.weightKg && <p className="mt-1 text-xs text-slate-500">Started at {weightSnapshot.first.weightKg} kg</p>}</div>
+            <div className="hidden h-px w-16 bg-gradient-to-r from-electric-500 to-violet sm:block" aria-hidden="true" />
+            <div className="rounded-2xl border border-violet/30 bg-violet/10 p-4 text-center"><p className="text-[10px] font-black uppercase tracking-[.15em] text-violet-200">Your target</p><p className="mt-1 text-3xl font-black text-violet-100">{weightSnapshot.target ?? '—'}{weightSnapshot.target ? <span className="ml-1 text-sm text-violet-200/70">kg</span> : ''}</p><p className="mt-1 text-xs text-violet-200/70">{weightSnapshot.target ? 'Update from your profile setup anytime.' : 'No target set — consistency still counts.'}</p></div>
+          </div>
+          {weightSnapshot.target && <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/8"><div className="h-full rounded-full bg-gradient-to-r from-electric-500 via-neon to-violet" style={{ width: `${Math.min(100, Math.max(6, 100 - Math.abs(weightSnapshot.latest.weightKg - weightSnapshot.target) / Math.max(1, Math.abs((weightSnapshot.first?.weightKg ?? weightSnapshot.latest.weightKg) - weightSnapshot.target)) * 100))}%` }} /></div>}
+        </GlassCard>
+      )}
 
       {/* Progression (§20) */}
       {progression.length > 0 && (
