@@ -27,7 +27,7 @@ function cameraProblem(err: unknown) {
 /** One consent tap per workout. Once active it automatically follows the
  * current supported exercise, all inference stays on-device, and rep counts
  * remain guidance only — it never completes a set or awards XP. */
-export function LiveFormCoach({ exerciseId, exerciseName }: { exerciseId: string; exerciseName: string }) {
+export function LiveFormCoach({ exerciseId, exerciseName, onGuidanceStarted }: { exerciseId: string; exerciseName: string; onGuidanceStarted?: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -150,6 +150,7 @@ export function LiveFormCoach({ exerciseId, exerciseName }: { exerciseId: string
       counterRef.current = new AngleRepCounter(trackable.counter);
       setReps(0);
       setState('active');
+      onGuidanceStarted?.();
       stopLoop();
       rafRef.current = requestAnimationFrame(loop);
     } catch (err) {

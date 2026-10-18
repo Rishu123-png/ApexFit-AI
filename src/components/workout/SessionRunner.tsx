@@ -55,6 +55,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [arenaNote, setArenaNote] = useState('');
   const [arenaStatus, setArenaStatus] = useState<'starting' | 'ready' | 'offline'>('starting');
+  const [cameraGuidanceUsed, setCameraGuidanceUsed] = useState(false);
   const [restLeftSec, setRestLeftSec] = useState<number | null>(null);
   const [restoredAgoMin, setRestoredAgoMin] = useState<number | null>(null);
   const startedAtRef = useRef(Date.now());
@@ -230,6 +231,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         durationSec: seconds,
         totalSets,
         status,
+        cameraGuidanceUsed,
         exercises,
       }, verificationSessionRef.current?.id);
       setSaveState('saved');
@@ -264,7 +266,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         ['daily_mission', undefined],
         ['weekly_milestone', undefined],
       ];
-      if (!sealed) {
+      if (!sealed || !cameraGuidanceUsed) {
         setArenaNote('Session saved as self-reported (no server plausibility check) — records stay private; no XP was awarded.');
         return;
       }
@@ -437,7 +439,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
         </div>
 
         <div className="mb-4">
-          <LiveFormCoach exerciseId={current.id} exerciseName={current.name} />
+          <LiveFormCoach exerciseId={current.id} exerciseName={current.name} onGuidanceStarted={() => setCameraGuidanceUsed(true)} />
         </div>
 
         {current.substitution && (
@@ -449,7 +451,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
 
         <div className="flex gap-2">
           <Button glow onClick={markSet} disabled={doneSets >= current.sets} className="flex-1 py-3">
-            <IconCheck width={15} /> Set done ({doneSets}/{current.sets})
+            <IconCheck width={15} /> Log set ({doneSets}/{current.sets})
           </Button>
           {next && (
             <Button variant="ghost" onClick={goNext} className="px-4">
@@ -457,6 +459,7 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
             </Button>
           )}
         </div>
+        <p className="mt-2 text-center text-[11px] leading-relaxed text-slate-500">A button press is a self-report, not proof that the movement was completed. Enable local camera guidance for supported exercises when you want posture cues. Stop for pain.</p>
       </GlassCard>
 
       {/* Up next */}

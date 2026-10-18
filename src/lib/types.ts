@@ -94,6 +94,8 @@ export interface WorkoutSession {
   totalSets: number;
   status: 'completed' | 'partial';
   exercises: SessionExercise[];
+  /** True when local camera guidance was enabled at least once; this is a coaching signal, not proof of safe exercise. */
+  cameraGuidanceUsed?: boolean;
   /** server-only fields — database rules forbid clients from writing these */
   verified?: boolean;
   sealedAt?: number;
