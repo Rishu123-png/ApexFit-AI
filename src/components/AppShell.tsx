@@ -8,11 +8,11 @@ import { clsx } from '@/lib/clsx';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import { LogoMark, LogoWord } from '@/components/Logo';
 import { ArenaTopPill } from '@/components/navigation/ArenaTopPill';
+import { FloatingApexAssistant } from '@/components/assistant/FloatingApexAssistant';
 import {
   IconHome,
   IconDumbbell,
   IconBowl,
-  IconCamera,
   IconCrown,
   IconLogout,
   IconTrendingUp,
@@ -25,7 +25,6 @@ const PRIMARY_NAV = [
   { href: '/dashboard', label: 'Home', icon: IconHome },
   { href: '/workouts', label: 'Train', icon: IconDumbbell },
   { href: '/nutrition', label: 'Fuel', icon: IconBowl },
-  { href: '/camera', label: 'Vision', icon: IconCamera },
   { href: '/insights', label: 'Insights', icon: IconTrendingUp },
 ];
 
@@ -190,7 +189,9 @@ export function AppShell({ children }: { children: ReactNode }) {
         <main className="flex-1 px-4 pb-28 pt-6 sm:px-6 lg:px-8 lg:pb-10">{children}</main>
       </div>
 
-      {/* Mobile has only the five high-frequency tasks. Plans live in Train; Arena remains in the top bar. */}
+      <FloatingApexAssistant />
+
+      {/* Mobile keeps only high-frequency tasks. Camera coaching appears inside a workout after a one-tap consent. */}
       <nav
         className="fixed inset-x-3 bottom-3 z-40 rounded-2xl border border-white/10 bg-[#080c1a]/90 p-1.5 shadow-[0_16px_45px_rgba(0,0,0,0.38)] backdrop-blur-2xl lg:hidden"
         aria-label="Primary navigation"
