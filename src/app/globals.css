@@ -1,6 +1,5 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@config "../../tailwind.config.ts";
+@import "tailwindcss";
 
 :root {
   --bg: #04060e;
@@ -22,7 +21,7 @@
     scroll-behavior: smooth;
   }
   body {
-    @apply bg-ink text-slate-100 antialiased;
+    @apply bg-ink font-sans text-slate-100 antialiased;
     min-height: 100dvh;
     overflow-x: hidden;
   }
