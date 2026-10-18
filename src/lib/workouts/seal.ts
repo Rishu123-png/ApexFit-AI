@@ -13,8 +13,8 @@
 export const SEAL_LIMITS = {
   /** max clock skew tolerated between client claim and server clock */
   maxFutureSkewMs: 15 * 60_000,
-  /** claimed duration may exceed real elapsed time by at most this much */
-  graceMs: 5 * 60_000,
+  /** Small UI/network allowance above elapsed server time; starts are server-issued. */
+  graceMs: 90_000,
   /** no legit single session exceeds this */
   maxDurationSec: 4 * 3600,
   /** sessions older than this cannot be sealed (prevents inventory fraud) */
