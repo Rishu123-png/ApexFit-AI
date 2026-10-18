@@ -39,8 +39,11 @@ export async function createProfile(
   uid: string,
   profile: Omit<UserProfile, 'createdAt'>,
 ): Promise<void> {
-  await set(userRef(uid, 'profile'), { ...profile, createdAt: Date.now() });
-  await set(userRef(uid, 'preferences'), DEFAULT_PREFERENCES);
+  const root = ref(db());
+  await update(root, {
+    [`users/${uid}/profile`]: { ...profile, createdAt: Date.now() },
+    [`users/${uid}/preferences`]: DEFAULT_PREFERENCES,
+  });
 }
 
 /** Create only missing records after a provider sign-in; never overwrite user edits. */

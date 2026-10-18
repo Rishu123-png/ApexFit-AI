@@ -1,0 +1,15 @@
+{
+  "routes": [
+    { "path": "/", "title": "Home" },
+    { "path": "/login", "title": "Sign in" },
+    { "path": "/plans", "title": "Plans" },
+    { "path": "/dashboard", "title": "Dashboard" },
+    { "path": "/onboarding", "title": "Onboarding" },
+    { "path": "/workouts", "title": "Workouts" },
+    { "path": "/nutrition", "title": "Nutrition" },
+    { "path": "/food-scan", "title": "Food scan" },
+    { "path": "/insights", "title": "Insights" },
+    { "path": "/arena", "title": "Arena" },
+    { "path": "/camera", "title": "Camera" }
+  ]
+}

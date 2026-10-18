@@ -11,7 +11,9 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check-env": "node scripts/check-env.mjs",
+    "check-env:production": "node scripts/check-env.mjs --production"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.21",
