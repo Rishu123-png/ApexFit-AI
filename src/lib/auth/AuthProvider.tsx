@@ -124,6 +124,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email,
         goal: 'general-fitness',
         experience: 'beginner',
+        onboardingCompleted: false,
       });
     },
     [requireAuth],
@@ -136,9 +137,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await ensureProfile(cred.user.uid, {
       displayName: cred.user.displayName?.trim() || 'Athlete',
       email: cred.user.email ?? '',
-      goal: 'general-fitness',
-      experience: 'beginner',
-    });
+        goal: 'general-fitness',
+        experience: 'beginner',
+        onboardingCompleted: false,
+      });
   }, [requireAuth]);
 
   const resetPassword = useCallback(
