@@ -17,6 +17,17 @@ const TRACK_JOINTS = [
   JOINTS.leftElbow, JOINTS.rightElbow, JOINTS.leftWrist, JOINTS.rightWrist,
 ];
 
+function explainCameraError(error: unknown) {
+  if (!window.isSecureContext) return { state: 'error' as const, message: 'Camera access requires HTTPS. Open the secure app URL, not an HTTP or in-app preview link.' };
+  const name = error instanceof DOMException ? error.name : '';
+  if (name === 'NotAllowedError' || name === 'SecurityError') return { state: 'denied' as const, message: 'Camera permission is blocked. Tap the lock/settings icon beside the address bar, allow Camera for this site, then retry.' };
+  if (name === 'NotReadableError' || name === 'TrackStartError') return { state: 'error' as const, message: 'Your camera is busy in another app or browser tab. Close it there, then retry.' };
+  if (name === 'OverconstrainedError') return { state: 'error' as const, message: 'This camera cannot use the requested video mode. Retry to use your device default camera.' };
+  if (name === 'NotFoundError') return { state: 'error' as const, message: 'No usable camera was found on this device.' };
+  if (name === 'AbortError') return { state: 'error' as const, message: 'Camera startup was interrupted. Retry once the browser has finished switching camera apps.' };
+  return { state: 'error' as const, message: 'Camera could not start. Check site permission, close other camera apps, and retry.' };
+}
+
 export default function CameraWorkoutPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -28,6 +39,7 @@ export default function CameraWorkoutPage() {
   const lastUiUpdateRef = useRef(0);
 
   const [state, setState] = useState<CameraState>('idle');
+  const [cameraError, setCameraError] = useState('');
   const [engine, setEngine] = useState<EngineState>({ kind: 'idle' });
   const [videoReady, setVideoReady] = useState(false);
   const [tracking, setTracking] = useState(false);
@@ -128,7 +140,13 @@ export default function CameraWorkoutPage() {
       setState('unsupported');
       return;
     }
+    if (!window.isSecureContext) {
+      setCameraError('Camera access requires HTTPS. Open the secure app URL, not an HTTP or in-app preview link.');
+      setState('error');
+      return;
+    }
 
+    setCameraError('');
     stopLoop();
     stopStream();
     engineRef.current?.dispose();
@@ -161,6 +179,7 @@ export default function CameraWorkoutPage() {
         if (streamRef.current === stream) {
           stopTracking();
           setVideoReady(false);
+          setCameraError('Camera access ended unexpectedly. Another app may have taken control of the camera.');
           setState('error');
         }
       };
@@ -183,8 +202,9 @@ export default function CameraWorkoutPage() {
       setState('active');
     } catch (err) {
       stopStream();
-      const name = err instanceof DOMException ? err.name : '';
-      setState(name === 'NotAllowedError' || name === 'SecurityError' ? 'denied' : 'error');
+      const problem = explainCameraError(err);
+      setCameraError(problem.message);
+      setState(problem.state);
     }
   }
 
@@ -389,13 +409,16 @@ export default function CameraWorkoutPage() {
       )}
 
       {state === 'denied' && (
-        <Alert kind="error" className="flex items-start gap-2">
-          <IconAlert width={16} className="mt-0.5 shrink-0" />
-          <span><b>Camera permission denied.</b> Enable it in your browser’s site settings, then reload — the app never requests it without you tapping the button.</span>
+        <Alert kind="error" className="space-y-3">
+          <span className="flex items-start gap-2"><IconAlert width={16} className="mt-0.5 shrink-0" /><span><b>Camera permission blocked.</b> {cameraError}</span></span>
+          <Button variant="outline" onClick={() => void startCamera()} className="w-full"><IconRefresh width={15} /> Try camera again</Button>
         </Alert>
       )}
       {state === 'error' && (
-        <Alert kind="error">The camera couldn’t be started on this device. Close other camera apps and retry.</Alert>
+        <Alert kind="error" className="space-y-3">
+          <span className="flex items-start gap-2"><IconAlert width={16} className="mt-0.5 shrink-0" /><span>{cameraError || 'Camera could not start. Check permission and retry.'}</span></span>
+          <Button variant="outline" onClick={() => void startCamera()} className="w-full"><IconRefresh width={15} /> Retry camera</Button>
+        </Alert>
       )}
       {state === 'unsupported' && (
         <Alert kind="warning">This browser doesn’t expose camera APIs. Chrome on Android or Safari on iOS work best.</Alert>
