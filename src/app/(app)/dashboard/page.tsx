@@ -14,7 +14,7 @@ import {
 } from '@/lib/db';
 import { dateKey, friendlyDate, last7DayLabels, formatDuration, formatTime } from '@/lib/dates';
 import { DEFAULT_PREFERENCES, type NutritionEntry, type Preferences, type WorkoutSession } from '@/lib/types';
-import { GlassCard, SectionTitle, Badge, Button, EmptyState, Spinner } from '@/components/ui';
+import { GlassCard, SectionTitle, Badge, Button, EmptyState, Spinner, Alert } from '@/components/ui';
 import { ProgressRing, MiniBars, MacroBar } from '@/components/charts';
 import { WORKOUT_PLANS } from '@/lib/data/plans';
 import {
@@ -33,13 +33,18 @@ export default function DashboardPage() {
   const [recent, setRecent] = useState<WorkoutSession[] | null>(null);
   const [waterBusy, setWaterBusy] = useState(false);
   const [waterFlash, setWaterFlash] = useState('');
+  const [dataError, setDataError] = useState(false);
   const reducedMotion = useReducedMotion();
 
-  useEffect(() => subscribePreferences(uid, setPrefs), [uid]);
-  useEffect(() => subscribeNutritionDay(uid, today, setMeals), [uid, today]);
-  useEffect(() => subscribeHydration(uid, today, setWaterMl), [uid, today]);
-  useEffect(() => subscribeWeekWorkouts(uid, setWeek), [uid]);
-  useEffect(() => subscribeRecentWorkouts(uid, 5, setRecent), [uid]);
+  const handleDataError = () => {
+    setDataError(true);
+  };
+
+  useEffect(() => subscribePreferences(uid, setPrefs, handleDataError), [uid]);
+  useEffect(() => subscribeNutritionDay(uid, today, (value) => setMeals(value), () => { setMeals([]); handleDataError(); }), [uid, today]);
+  useEffect(() => subscribeHydration(uid, today, (value) => setWaterMl(value), () => { setWaterMl(0); handleDataError(); }), [uid, today]);
+  useEffect(() => subscribeWeekWorkouts(uid, (value) => setWeek(value), () => { setWeek([]); handleDataError(); }), [uid]);
+  useEffect(() => subscribeRecentWorkouts(uid, 5, (value) => setRecent(value), () => { setRecent([]); handleDataError(); }), [uid]);
 
   const totals = useMemo(() => {
     const list = meals ?? [];
@@ -109,6 +114,12 @@ export default function DashboardPage() {
           </div>
         </div>
       </motion.section>
+
+      {dataError && (
+        <Alert kind="warning">
+          Some private activity data could not load. Check your phone connection and Firebase access, then refresh this page. The app is still usable, but the dashboard may show incomplete totals.
+        </Alert>
+      )}
 
       {/* High-frequency actions stay above the fold on every viewport. */}
       <motion.div

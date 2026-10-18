@@ -42,6 +42,7 @@ export default function OnboardingPage() {
   const [baselineChecked, setBaselineChecked] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [profileError, setProfileError] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -61,7 +62,7 @@ export default function OnboardingPage() {
         setDays(next.trainingDaysPerWeek ? String(next.trainingDaysPerWeek) : '3');
         setEquipment(next.equipmentAccess ?? 'none');
       }
-    });
+    }, () => setProfileError(true));
   }, [router, user]);
 
   function toggleFocus(item: TrainingFocus) {
@@ -119,6 +120,14 @@ export default function OnboardingPage() {
     }
   }
 
+  if (profileError) {
+    return (
+      <div className="mx-auto max-w-xl">
+        <Alert kind="error">Your private profile could not be loaded. Check your phone connection and Firebase access, then retry.</Alert>
+        <Button variant="outline" className="mt-4 w-full" onClick={() => window.location.reload()}>Retry</Button>
+      </div>
+    );
+  }
   if (!profile) return <div className="mx-auto max-w-xl"><div className="skeleton h-72" /></div>;
 
   return (

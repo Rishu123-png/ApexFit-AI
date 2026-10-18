@@ -32,6 +32,7 @@ function db() {
 }
 
 const userRef = (uid: string, path: string) => ref(db(), `users/${uid}/${path}`);
+type SubscriptionError = (error: Error) => void;
 
 // ── Profile & preferences ────────────────────────────────────────────────────
 
@@ -64,16 +65,19 @@ export async function ensureProfile(
 export function subscribeProfile(
   uid: string,
   cb: (profile: UserProfile | null) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
-  return onValue(userRef(uid, 'profile'), (s) => cb(s.exists() ? (s.val() as UserProfile) : null));
+  return onValue(userRef(uid, 'profile'), (s) => cb(s.exists() ? (s.val() as UserProfile) : null), onError);
 }
 
 export function subscribePreferences(
   uid: string,
   cb: (prefs: Preferences) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   return onValue(userRef(uid, 'preferences'), (s) =>
     cb(s.exists() ? { ...DEFAULT_PREFERENCES, ...(s.val() as Preferences) } : DEFAULT_PREFERENCES),
+    onError,
   );
 }
 
@@ -97,6 +101,7 @@ export async function saveBodyMetric(uid: string, metric: Omit<BodyMetric, 'reco
 export function subscribeBodyMetrics(
   uid: string,
   cb: (metrics: BodyMetric[]) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   const q = query(userRef(uid, 'bodyMetrics'), orderByChild('recordedAt'), limitToLast(60));
   return onValue(q, (snapshot) => {
@@ -106,7 +111,7 @@ export function subscribeBodyMetrics(
         .filter((value) => Number.isFinite(value.weightKg) && Number.isFinite(value.heightCm) && Number.isFinite(value.recordedAt))
         .sort((a, b) => a.recordedAt - b.recordedAt),
     );
-  });
+  }, onError);
 }
 
 // ── Nutrition ────────────────────────────────────────────────────────────────
@@ -115,6 +120,7 @@ export function subscribeNutritionDay(
   uid: string,
   dayKey: string,
   cb: (entries: NutritionEntry[]) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   return onValue(userRef(uid, `nutrition/${dayKey}`), (s) => {
     if (!s.exists()) return cb([]);
@@ -124,7 +130,7 @@ export function subscribeNutritionDay(
         .map(([id, e]) => ({ ...e, id }))
         .sort((a, b) => a.loggedAt - b.loggedAt),
     );
-  });
+  }, onError);
 }
 
 export async function addNutritionEntry(
@@ -180,11 +186,12 @@ export function subscribeHydration(
   uid: string,
   dayKey: string,
   cb: (totalMl: number) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   return onValue(userRef(uid, `hydration/${dayKey}`), (s) => {
     if (!s.exists()) return cb(0);
     cb((s.val() as { totalMl?: number }).totalMl ?? 0);
-  });
+  }, onError);
 }
 
 export async function logWater(uid: string, dayKey: string, ml: number): Promise<void> {
@@ -219,6 +226,7 @@ export function subscribeRecentWorkouts(
   uid: string,
   count: number,
   cb: (sessions: WorkoutSession[]) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   const q = query(userRef(uid, 'workouts'), orderByChild('startedAt'), limitToLast(count));
   return onValue(q, (s) => {
@@ -229,20 +237,21 @@ export function subscribeRecentWorkouts(
         .map(([id, w]) => ({ ...w, id }))
         .sort((a, b) => b.startedAt - a.startedAt),
     );
-  });
+  }, onError);
 }
 
 /** Sessions from the last 7 local days (for weekly activity). */
 export function subscribeWeekWorkouts(
   uid: string,
   cb: (sessions: WorkoutSession[]) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   const q = query(userRef(uid, 'workouts'), orderByChild('startedAt'), startAt(daysAgoTs(6)));
   return onValue(q, (s) => {
     if (!s.exists()) return cb([]);
     const val = s.val() as Record<string, Omit<WorkoutSession, 'id'>>;
     cb(Object.entries(val).map(([id, w]) => ({ ...w, id })));
-  });
+  }, onError);
 }
 
 // ── One-shot reads (rare; subscriptions preferred) ───────────────────────────
@@ -271,7 +280,8 @@ export function subscribeCheckins(
   uid: string,
   days: number,
   cb: (items: Record<string, RecoveryCheckinRecord>) => void,
+  onError?: SubscriptionError,
 ): Unsubscribe {
   const q = query(userRef(uid, 'checkins'), limitToLast(days));
-  return onValue(q, (s) => cb(s.exists() ? (s.val() as Record<string, RecoveryCheckinRecord>) : {}));
+  return onValue(q, (s) => cb(s.exists() ? (s.val() as Record<string, RecoveryCheckinRecord>) : {}), onError);
 }

@@ -85,10 +85,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     // Session persistence: user stays signed in across browser restarts.
     setPersistence(fb.auth, browserLocalPersistence).catch(() => undefined);
-    const unsub = onAuthStateChanged(fb.auth, (u) => {
-      setUser(u);
-      setLoading(false);
-    });
+    const unsub = onAuthStateChanged(
+      fb.auth,
+      (u) => {
+        setUser(u);
+        setLoading(false);
+      },
+      () => {
+        // Do not leave mobile users on an infinite splash screen when the
+        // browser cannot reach Firebase Auth or restore local persistence.
+        setUser(null);
+        setLoading(false);
+      },
+    );
     return unsub;
   }, []);
 
