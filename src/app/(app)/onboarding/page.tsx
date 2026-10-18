@@ -104,7 +104,7 @@ export default function OnboardingPage() {
       const proteinTarget = Math.max(50, Math.min(220, Math.round(weightKg * (goal === 'muscle-gain' ? 1.6 : 1.3))));
       await Promise.all([
         updateProfileFields(user.uid, {
-          heightCm, weightKg, targetWeightKg: target, goal, focusAreas: focus, experience, trainingDaysPerWeek,
+          heightCm, weightKg, ...(target !== undefined ? { targetWeightKg: target } : {}), goal, focusAreas: focus, experience, trainingDaysPerWeek,
           equipmentAccess: equipment, onboardingCompleted: true,
           ...(baselineChecked ? { localBodyBaselineCheckedAt: Date.now() } : {}),
         }),
