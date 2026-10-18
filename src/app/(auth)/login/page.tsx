@@ -36,7 +36,7 @@ export default function LoginPage() {
 
   // Already authenticated → go straight to the dashboard (only after Firebase confirms).
   useEffect(() => {
-    if (mounted && configured && !loading && user) router.replace('/dashboard');
+    if (mounted && configured && !loading && user) router.replace('/onboarding');
   }, [mounted, configured, loading, user, router]);
 
   if (!mounted || loading) return <Splash message="Preparing secure sign in…" />;
@@ -73,10 +73,10 @@ export default function LoginPage() {
     try {
       if (mode === 'signin') {
         await signIn(email.trim(), password);
-        router.replace('/dashboard');
+        router.replace('/onboarding');
       } else if (mode === 'signup') {
         await signUp(name.trim(), email.trim(), password);
-        router.replace('/dashboard');
+        router.replace('/onboarding');
       } else {
         await resetPassword(email.trim());
         setNotice(`If an account exists for ${email.trim()}, a password-reset link is on its way. Check your inbox (and spam folder).`);
@@ -94,7 +94,7 @@ export default function LoginPage() {
     setBusy('google');
     try {
       await signInWithGoogle();
-      router.replace('/dashboard');
+      router.replace('/onboarding');
     } catch (err) {
       setError(authErrorMessage(err));
       setBusy(null);
