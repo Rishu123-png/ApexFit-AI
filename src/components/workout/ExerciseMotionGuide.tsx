@@ -23,14 +23,16 @@ export function ExerciseMotionGuide({ exercise }: { exercise: Exercise }) {
   const reducedMotion = useReducedMotion();
   const kind = kindFor(exercise.id);
   const animate = reducedMotion ? undefined : loop;
+  const phaseLabel = kind === 'squat' || kind === 'lunge' ? 'Stand → lower → stand' : kind === 'push' || kind === 'plank' ? 'Brace → move slowly → return' : 'Set position → move gently → return';
 
   return (
     <div className="relative overflow-hidden rounded-2xl border border-electric-500/20 bg-[radial-gradient(circle_at_72%_24%,rgba(34,224,255,0.13),transparent_34%),linear-gradient(145deg,rgba(10,20,44,0.92),rgba(5,9,19,0.9))] p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-electric-300">Animated movement guide</span>
-        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-1 text-[10px] font-semibold text-slate-400">Watch → copy → go slow</span>
+        <span className="text-[10px] font-black uppercase tracking-[0.16em] text-electric-300">Learn this movement</span>
+        <span className="rounded-full border border-neon/20 bg-neon/5 px-2 py-1 text-[10px] font-semibold text-neon">Watch → practise → start</span>
       </div>
-      <svg viewBox="0 0 220 120" className="h-32 w-full" role="img" aria-label={`Illustrated movement guide for ${exercise.name}`}>
+      <div className="mb-2 rounded-xl border border-white/8 bg-black/20 px-3 py-2 text-center text-xs font-bold text-slate-200">{phaseLabel}</div>
+      <svg viewBox="0 0 220 120" className="h-36 w-full sm:h-40" role="img" aria-label={`Illustrated movement guide for ${exercise.name}`}>
         <defs>
           <linearGradient id="guide-line" x1="0" y1="0" x2="1" y2="1"><stop stopColor="#22e0ff" /><stop offset="1" stopColor="#2f8bff" /></linearGradient>
           <filter id="guide-glow"><feGaussianBlur stdDeviation="2" result="blur" /><feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
@@ -81,7 +83,16 @@ export function ExerciseMotionGuide({ exercise }: { exercise: Exercise }) {
           </motion.g>
         )}
       </svg>
-      <p className="mt-1 flex items-start gap-1.5 text-[11px] leading-relaxed text-slate-400"><IconInfo width={13} className="mt-0.5 shrink-0 text-electric-300" /> This is a simple visual cue, not an assessment. Use the written steps and stop for pain or dizziness.</p>
+      <div className="mt-2 grid gap-2 sm:grid-cols-3">
+        {exercise.instructions.slice(0, 3).map((instruction, index) => (
+          <div key={instruction} className="rounded-xl border border-white/8 bg-white/[.035] p-2.5">
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-electric-500/20 text-[10px] font-black text-electric-200">{index + 1}</span>
+            <p className="mt-2 text-[11px] leading-relaxed text-slate-300">{instruction}</p>
+          </div>
+        ))}
+      </div>
+      {exercise.substitution && <p className="mt-2 rounded-xl border border-amber/20 bg-amber/5 px-3 py-2 text-[11px] leading-relaxed text-amber-100"><b>Make it easier:</b> {exercise.substitution}</p>}
+      <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-relaxed text-slate-400"><IconInfo width={13} className="mt-0.5 shrink-0 text-electric-300" /> This guide is not a medical assessment. Stop for ankle, knee, back or other pain, and seek qualified advice if pain persists.</p>
     </div>
   );
 }

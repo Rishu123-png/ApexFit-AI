@@ -142,7 +142,10 @@ export function LiveFormCoach({ exerciseId, exerciseName }: { exerciseId: string
       });
       const engine = createPoseEngine();
       engineRef.current = engine;
-      await engine.load();
+      await Promise.race([
+        engine.load(),
+        new Promise<void>((_, reject) => window.setTimeout(() => reject(new DOMException('Pose model timed out', 'TimeoutError')), 12000)),
+      ]);
       engine.onResults(handleFrame);
       counterRef.current = new AngleRepCounter(trackable.counter);
       setReps(0);
@@ -151,7 +154,9 @@ export function LiveFormCoach({ exerciseId, exerciseName }: { exerciseId: string
       rafRef.current = requestAnimationFrame(loop);
     } catch (err) {
       stopCamera();
-      setError(cameraProblem(err));
+      setError(err instanceof DOMException && err.name === 'TimeoutError'
+        ? 'The local pose model is taking too long to load. Camera guidance is unavailable right now; you can follow the visual guide or retry on a stronger connection.'
+        : cameraProblem(err));
       setState('error');
     }
   }

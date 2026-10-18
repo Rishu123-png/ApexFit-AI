@@ -69,10 +69,16 @@ function NutritionInner() {
   const [prefDraft, setPrefDraft] = useState<string>('');
   const [prefSaved, setPrefSaved] = useState(false);
   const [waterBusy, setWaterBusy] = useState(false);
+  const [historyOffline, setHistoryOffline] = useState(false);
 
-  useEffect(() => subscribeNutritionDay(uid, today, setEntries), [uid, today]);
-  useEffect(() => subscribePreferences(uid, setPrefs), [uid]);
-  useEffect(() => subscribeHydration(uid, today, setWaterMl), [uid, today]);
+  useEffect(() => subscribeNutritionDay(uid, today, setEntries, () => { setEntries([]); setHistoryOffline(true); }), [uid, today]);
+  useEffect(() => subscribePreferences(uid, setPrefs, () => setHistoryOffline(true)), [uid]);
+  useEffect(() => subscribeHydration(uid, today, setWaterMl, () => setHistoryOffline(true)), [uid, today]);
+  useEffect(() => {
+    if (entries !== null) return;
+    const timer = window.setTimeout(() => { setEntries([]); setHistoryOffline(true); }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [entries]);
 
   useEffect(() => {
     if (params.get('add') === '1') openForm();
@@ -258,6 +264,8 @@ function NutritionInner() {
           </Button>
         </div>
       </div>
+
+      {historyOffline && <Alert kind="warning">Your nutrition tools work offline. Today’s saved history will sync when the connection returns; estimates remain editable before saving.</Alert>}
 
       {/* Daily totals */}
       <GlassCard>

@@ -7,7 +7,7 @@ import { WORKOUT_PLANS } from '@/lib/data/plans';
 import { subscribeProfile, subscribeRecentWorkouts } from '@/lib/db';
 import { formatDuration } from '@/lib/dates';
 import type { UserProfile, WorkoutPlan, WorkoutSession } from '@/lib/types';
-import { GlassCard, SectionTitle, Badge, Button, EmptyState } from '@/components/ui';
+import { GlassCard, SectionTitle, Badge, Button, EmptyState, Alert } from '@/components/ui';
 import { SessionRunner } from '@/components/workout/SessionRunner';
 import { IconPlay, IconClock, IconDumbbell } from '@/components/icons';
 import { clsx } from '@/lib/clsx';
@@ -25,9 +25,15 @@ function WorkoutsInner() {
   const [activePlan, setActivePlan] = useState<WorkoutPlan | null>(null);
   const [recent, setRecent] = useState<WorkoutSession[] | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [historyOffline, setHistoryOffline] = useState(false);
 
-  useEffect(() => subscribeRecentWorkouts(user!.uid, 6, setRecent), [user]);
-  useEffect(() => subscribeProfile(user!.uid, setProfile), [user]);
+  useEffect(() => subscribeRecentWorkouts(user!.uid, 6, (value) => setRecent(value), () => { setRecent([]); setHistoryOffline(true); }), [user]);
+  useEffect(() => subscribeProfile(user!.uid, setProfile, () => setHistoryOffline(true)), [user]);
+  useEffect(() => {
+    if (recent !== null) return;
+    const timer = window.setTimeout(() => { setRecent([]); setHistoryOffline(true); }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [recent]);
 
   // Deep link: /workouts?plan=<id> starts that plan's overview first click.
   useEffect(() => {
@@ -58,6 +64,8 @@ function WorkoutsInner() {
         <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">Training <span className="neon-text">plans</span></h1>
         <p className="mt-1 text-sm text-slate-400">Pick a plan and run a guided session with live set tracking.</p>
       </div>
+
+      {historyOffline && <Alert kind="warning">Workout plans are ready offline. Recent history will sync when your connection returns.</Alert>}
 
       <GlassCard className="relative overflow-hidden border-electric-500/25 bg-[linear-gradient(135deg,rgba(20,49,96,.55),rgba(12,15,30,.8))]">
         <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-neon/15 blur-3xl" />
