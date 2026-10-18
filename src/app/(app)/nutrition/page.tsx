@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
+import Link from 'next/link';
 import { useAuth } from '@/lib/auth/AuthProvider';
 import { FOODS, FOOD_CATEGORIES } from '@/lib/data/foods';
 import {
@@ -27,8 +28,9 @@ import {
 } from '@/lib/types';
 import { GlassCard, SectionTitle, Badge, Button, Field, Alert, EmptyState } from '@/components/ui';
 import { MacroBar, ProgressRing } from '@/components/charts';
-import { IconPlus, IconX, IconTrash, IconEdit, IconCheck, IconBowl, IconDroplet, IconShield, IconInfo } from '@/components/icons';
+import { IconPlus, IconX, IconTrash, IconEdit, IconCheck, IconBowl, IconDroplet, IconShield, IconInfo, IconCamera } from '@/components/icons';
 import { clsx } from '@/lib/clsx';
+import { DailyNutritionPlan } from '@/components/nutrition/DailyNutritionPlan';
 
 const MEALS: { id: MealType; label: string }[] = [
   { id: 'breakfast', label: 'Breakfast' },
@@ -249,9 +251,12 @@ function NutritionInner() {
           <h1 className="text-2xl font-extrabold tracking-tight sm:text-3xl">Nutrition <span className="neon-text">tracker</span></h1>
           <p className="mt-1 text-sm text-slate-400">Log meals against your daily targets. Food-DB, custom and AI-estimated values are always labelled — estimates stay editable.</p>
         </div>
-        <Button glow onClick={() => (formOpen ? closeForm() : openForm())}>
-          {formOpen ? <><IconX width={15} /> Close</> : <><IconPlus width={15} /> Add food</>}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/food-scan"><Button variant="outline"><IconCamera width={15} /> Scan food</Button></Link>
+          <Button glow onClick={() => (formOpen ? closeForm() : openForm())}>
+            {formOpen ? <><IconX width={15} /> Close</> : <><IconPlus width={15} /> Add food</>}
+          </Button>
+        </div>
       </div>
 
       {/* Daily totals */}
@@ -282,6 +287,8 @@ function NutritionInner() {
           </div>
         </div>
       </GlassCard>
+
+      <DailyNutritionPlan prefs={prefs} />
 
       {/* Add / edit form */}
       {formOpen && (
