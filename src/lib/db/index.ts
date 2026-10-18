@@ -21,9 +21,18 @@ import type {
   UserProfile,
   WorkoutSession,
   BodyMetric,
+  SavedRecipe,
 } from '@/lib/types';
 import { DEFAULT_PREFERENCES } from '@/lib/types';
 import { daysAgoTs } from '@/lib/dates';
+import {
+  migrateNutritionEntry,
+  migratePreferences,
+  migrateProfile,
+  migrateWorkoutSession,
+  withDataVersion,
+  CURRENT_DATA_SCHEMA_VERSION,
+} from '@/lib/data/schema';
 
 function db() {
   const fb = getFirebase();
@@ -42,8 +51,8 @@ export async function createProfile(
 ): Promise<void> {
   const root = ref(db());
   await update(root, {
-    [`users/${uid}/profile`]: { ...profile, createdAt: Date.now() },
-    [`users/${uid}/preferences`]: DEFAULT_PREFERENCES,
+    [`users/${uid}/profile`]: withDataVersion({ ...profile, createdAt: Date.now() }),
+    [`users/${uid}/preferences`]: withDataVersion(DEFAULT_PREFERENCES),
   });
 }
 
@@ -57,8 +66,8 @@ export async function ensureProfile(
     get(userRef(uid, 'preferences')),
   ]);
   const writes: Promise<void>[] = [];
-  if (!profileSnap.exists()) writes.push(set(userRef(uid, 'profile'), { ...profile, createdAt: Date.now() }));
-  if (!prefsSnap.exists()) writes.push(set(userRef(uid, 'preferences'), DEFAULT_PREFERENCES));
+  if (!profileSnap.exists()) writes.push(set(userRef(uid, 'profile'), withDataVersion({ ...profile, createdAt: Date.now() })));
+  if (!prefsSnap.exists()) writes.push(set(userRef(uid, 'preferences'), withDataVersion(DEFAULT_PREFERENCES)));
   await Promise.all(writes);
 }
 
@@ -67,7 +76,7 @@ export function subscribeProfile(
   cb: (profile: UserProfile | null) => void,
   onError?: SubscriptionError,
 ): Unsubscribe {
-  return onValue(userRef(uid, 'profile'), (s) => cb(s.exists() ? (s.val() as UserProfile) : null), onError);
+  return onValue(userRef(uid, 'profile'), (s) => cb(s.exists() ? migrateProfile(s.val()) : null), onError);
 }
 
 export function subscribePreferences(
@@ -76,20 +85,20 @@ export function subscribePreferences(
   onError?: SubscriptionError,
 ): Unsubscribe {
   return onValue(userRef(uid, 'preferences'), (s) =>
-    cb(s.exists() ? { ...DEFAULT_PREFERENCES, ...(s.val() as Preferences) } : DEFAULT_PREFERENCES),
+    cb(s.exists() ? migratePreferences(s.val()) : DEFAULT_PREFERENCES),
     onError,
   );
 }
 
 export async function savePreferences(uid: string, prefs: Preferences): Promise<void> {
-  await set(userRef(uid, 'preferences'), prefs);
+  await set(userRef(uid, 'preferences'), withDataVersion(prefs));
 }
 
 export function updateProfileFields(
   uid: string,
   fields: Partial<UserProfile>,
 ): Promise<void> {
-  return update(userRef(uid, 'profile'), fields);
+  return update(userRef(uid, 'profile'), { ...fields, schemaVersion: CURRENT_DATA_SCHEMA_VERSION });
 }
 
 /** Store a self-reported check-in only. Camera frames/photos are never written. */
@@ -124,10 +133,10 @@ export function subscribeNutritionDay(
 ): Unsubscribe {
   return onValue(userRef(uid, `nutrition/${dayKey}`), (s) => {
     if (!s.exists()) return cb([]);
-    const val = s.val() as Record<string, Omit<NutritionEntry, 'id'>>;
+    const val = s.val() as Record<string, unknown>;
     cb(
       Object.entries(val)
-        .map(([id, e]) => ({ ...e, id }))
+        .map(([id, entry]) => migrateNutritionEntry(id, entry))
         .sort((a, b) => a.loggedAt - b.loggedAt),
     );
   }, onError);
@@ -139,7 +148,7 @@ export async function addNutritionEntry(
   entry: Omit<NutritionEntry, 'id'>,
 ): Promise<string> {
   const node = push(userRef(uid, `nutrition/${dayKey}`));
-  await set(node, entry);
+  await set(node, withDataVersion(entry));
   return node.key as string;
 }
 
@@ -157,7 +166,7 @@ export async function addNutritionEntries(
     const id = node.key;
     if (!id) throw new Error('Could not allocate a nutrition entry ID.');
     ids.push(id);
-    batch[id] = entry;
+    batch[id] = withDataVersion(entry);
   }
   if (ids.length > 0) await update(dayRef, batch);
   return ids;
@@ -169,7 +178,7 @@ export async function updateNutritionEntry(
   entryId: string,
   entry: Omit<NutritionEntry, 'id'>,
 ): Promise<void> {
-  await set(userRef(uid, `nutrition/${dayKey}/${entryId}`), entry);
+  await set(userRef(uid, `nutrition/${dayKey}/${entryId}`), withDataVersion(entry));
 }
 
 export async function deleteNutritionEntry(
@@ -178,6 +187,77 @@ export async function deleteNutritionEntry(
   entryId: string,
 ): Promise<void> {
   await remove(userRef(uid, `nutrition/${dayKey}/${entryId}`));
+}
+
+// ── Saved recipes / reusable meals ───────────────────────────────────────────
+
+export type SavedRecipeDraft = Omit<SavedRecipe, 'id' | 'createdAt' | 'updatedAt' | 'schemaVersion'>;
+
+function migrateRecipe(id: string, value: unknown): SavedRecipe | null {
+  if (typeof value !== 'object' || value === null) return null;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.name !== 'string' || raw.name.length === 0) return null;
+  const defaultMeal = raw.defaultMeal === 'lunch' || raw.defaultMeal === 'snacks' || raw.defaultMeal === 'dinner'
+    ? raw.defaultMeal
+    : 'breakfast';
+  const number = (key: string) => typeof raw[key] === 'number' && Number.isFinite(raw[key]) ? raw[key] as number : 0;
+  return {
+    id,
+    schemaVersion: number('schemaVersion'),
+    name: raw.name,
+    portionLabel: typeof raw.portionLabel === 'string' ? raw.portionLabel : '1 serving',
+    defaultMeal,
+    calories: number('calories'),
+    protein: number('protein'),
+    carbs: number('carbs'),
+    fat: number('fat'),
+    createdAt: number('createdAt'),
+    updatedAt: number('updatedAt'),
+  };
+}
+
+export function subscribeSavedRecipes(
+  uid: string,
+  cb: (recipes: SavedRecipe[]) => void,
+  onError?: SubscriptionError,
+): Unsubscribe {
+  return onValue(userRef(uid, 'recipes'), (snapshot) => {
+    if (!snapshot.exists()) return cb([]);
+    const recipes = Object.entries(snapshot.val() as Record<string, unknown>)
+      .map(([id, recipe]) => migrateRecipe(id, recipe))
+      .filter((recipe): recipe is SavedRecipe => recipe !== null)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    cb(recipes);
+  }, onError);
+}
+
+export async function saveRecipe(uid: string, recipe: SavedRecipeDraft): Promise<string> {
+  const node = push(userRef(uid, 'recipes'));
+  const now = Date.now();
+  await set(node, withDataVersion({ ...recipe, createdAt: now, updatedAt: now }));
+  return node.key as string;
+}
+
+export async function deleteRecipe(uid: string, recipeId: string): Promise<void> {
+  await remove(userRef(uid, `recipes/${recipeId}`));
+}
+
+/** Atomically log a food and save it as a reusable recipe when requested. */
+export async function addNutritionEntryWithRecipe(
+  uid: string,
+  dayKey: string,
+  entry: Omit<NutritionEntry, 'id'>,
+  recipe: SavedRecipeDraft,
+): Promise<{ entryId: string; recipeId: string }> {
+  const entryNode = push(userRef(uid, `nutrition/${dayKey}`));
+  const recipeNode = push(userRef(uid, 'recipes'));
+  if (!entryNode.key || !recipeNode.key) throw new Error('Could not allocate entry IDs.');
+  const now = Date.now();
+  await update(ref(db()), {
+    [`users/${uid}/nutrition/${dayKey}/${entryNode.key}`]: withDataVersion(entry),
+    [`users/${uid}/recipes/${recipeNode.key}`]: withDataVersion({ ...recipe, createdAt: now, updatedAt: now }),
+  });
+  return { entryId: entryNode.key, recipeId: recipeNode.key };
 }
 
 // ── Hydration ────────────────────────────────────────────────────────────────
@@ -217,7 +297,7 @@ export async function saveWorkoutSession(
   const node = sessionId
     ? userRef(uid, `workouts/${sessionId}`)
     : push(userRef(uid, 'workouts'));
-  await set(node, session);
+  await set(node, withDataVersion(session));
   return node.key as string;
 }
 
@@ -231,10 +311,11 @@ export function subscribeRecentWorkouts(
   const q = query(userRef(uid, 'workouts'), orderByChild('startedAt'), limitToLast(count));
   return onValue(q, (s) => {
     if (!s.exists()) return cb([]);
-    const val = s.val() as Record<string, Omit<WorkoutSession, 'id'>>;
+    const val = s.val() as Record<string, unknown>;
     cb(
       Object.entries(val)
-        .map(([id, w]) => ({ ...w, id }))
+        .map(([id, workout]) => migrateWorkoutSession(id, workout))
+        .filter((workout): workout is WorkoutSession => workout !== null)
         .sort((a, b) => b.startedAt - a.startedAt),
     );
   }, onError);
@@ -249,8 +330,12 @@ export function subscribeWeekWorkouts(
   const q = query(userRef(uid, 'workouts'), orderByChild('startedAt'), startAt(daysAgoTs(6)));
   return onValue(q, (s) => {
     if (!s.exists()) return cb([]);
-    const val = s.val() as Record<string, Omit<WorkoutSession, 'id'>>;
-    cb(Object.entries(val).map(([id, w]) => ({ ...w, id })));
+    const val = s.val() as Record<string, unknown>;
+    cb(
+      Object.entries(val)
+        .map(([id, workout]) => migrateWorkoutSession(id, workout))
+        .filter((workout): workout is WorkoutSession => workout !== null),
+    );
   }, onError);
 }
 
@@ -258,7 +343,7 @@ export function subscribeWeekWorkouts(
 
 export async function getPreferencesOnce(uid: string): Promise<Preferences> {
   const s = await get(userRef(uid, 'preferences'));
-  return s.exists() ? { ...DEFAULT_PREFERENCES, ...(s.val() as Preferences) } : DEFAULT_PREFERENCES;
+  return s.exists() ? migratePreferences(s.val()) : DEFAULT_PREFERENCES;
 }
 
 // ── Recovery check-ins (readiness factors; user-owned, private) ──────────────
