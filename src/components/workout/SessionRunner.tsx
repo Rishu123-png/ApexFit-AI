@@ -6,6 +6,8 @@ import { saveWorkoutSession } from '@/lib/db';
 import { claimArena, arenaFetch } from '@/lib/arena/client';
 import type { ArenaEventType } from '@/lib/arena/types';
 import { VoiceControl } from '@/components/voice/VoiceControl';
+import { ExerciseMotionGuide } from '@/components/workout/ExerciseMotionGuide';
+import { LiveFormCoach } from '@/components/workout/LiveFormCoach';
 import { formatDuration } from '@/lib/dates';
 import type { WorkoutPlan } from '@/lib/types';
 import { Button, GlassCard, Badge, Alert } from '@/components/ui';
@@ -411,9 +413,19 @@ export function SessionRunner({ plan, onExit }: { plan: WorkoutPlan; onExit: () 
           </div>
         </div>
 
-        <ol className="mb-4 list-decimal space-y-1.5 pl-5 text-sm leading-relaxed text-slate-300">
-          {current.instructions.map((step, i) => <li key={i}>{step}</li>)}
-        </ol>
+        <div className="mb-4 grid gap-3 lg:grid-cols-[0.92fr_1.08fr]">
+          <ExerciseMotionGuide exercise={current} />
+          <div className="rounded-2xl border border-white/8 bg-white/[0.018] p-3.5">
+            <p className="mb-2 text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">How to perform it</p>
+            <ol className="list-decimal space-y-1.5 pl-5 text-sm leading-relaxed text-slate-300">
+              {current.instructions.map((step, i) => <li key={i}>{step}</li>)}
+            </ol>
+          </div>
+        </div>
+
+        <div className="mb-4">
+          <LiveFormCoach exerciseId={current.id} exerciseName={current.name} />
+        </div>
 
         {current.substitution && (
           <p className="mb-4 flex items-start gap-2 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2.5 text-xs text-slate-400">
